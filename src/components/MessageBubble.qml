@@ -562,6 +562,7 @@ Rectangle {
         // sphere (same small config as the footer status row) with a
         // plain status label.
         Row {
+            id: promptRow
             visible: isStreaming && content.length === 0 && thinking.length === 0
             spacing: 8
 
@@ -573,6 +574,7 @@ Rectangle {
                 pitchRate: 8
                 interactive: false
                 anchors.verticalCenter: parent.verticalCenter
+                visible: promptRow.visible
             }
 
             Text {
