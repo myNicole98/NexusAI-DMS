@@ -558,30 +558,39 @@ Rectangle {
         }
 
 
-        // Streaming indicator before first content: the tumbling hex
-        // sphere (same small config as the footer status row) with a
-        // plain status label.
-        Row {
+        // Streaming indicator before first content: a plain status
+        // label breathing toward the accent — same 750 ms cadence as
+        // the tool chip's in-flight pulse.
+        Text {
             id: promptRow
             visible: isStreaming && content.length === 0 && thinking.length === 0
-            spacing: 8
+            text: "Processing prompt"
+            font.pixelSize: 11
 
-            HexSphereLogo {
-                radius: 11
-                strokeWidth: 1.5
-                subdivisions: 1
-                yawRate: 20
-                pitchRate: 8
-                interactive: false
-                anchors.verticalCenter: parent.verticalCenter
-                visible: promptRow.visible
+            // 0 → 1 → 0 while the label shows; lerps the color toward
+            // the accent (k = 0.55, matching breatheColor on the chips).
+            property real breathe: 0
+            SequentialAnimation on breathe {
+                running: promptRow.visible
+                loops: Animation.Infinite
+                NumberAnimation {
+                    from: 0; to: 1; duration: 750
+                    easing.type: Easing.InOutSine
+                }
+                NumberAnimation {
+                    from: 1; to: 0; duration: 750
+                    easing.type: Easing.InOutSine
+                }
             }
-
-            Text {
-                anchors.verticalCenter: parent.verticalCenter
-                text: "Processing prompt"
-                color: Theme.surfaceVariantText
-                font.pixelSize: 11
+            color: {
+                var k = breathe * 0.55;
+                var base = Theme.surfaceVariantText;
+                var accent = Theme.primary;
+                return Qt.rgba(
+                    base.r + (accent.r - base.r) * k,
+                    base.g + (accent.g - base.g) * k,
+                    base.b + (accent.b - base.b) * k,
+                    1);
             }
         }
 
