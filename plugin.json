@@ -1,0 +1,12 @@
+{
+  "id": "nexusAI",
+  "name": "Nexus AI",
+  "description": "AI assistant, made to be useful",
+  "version": "1.0.0",
+  "author": "myNicole98",
+  "type": "daemon",
+  "capabilities": ["slideout"],
+  "component": "./NexusDaemon.qml",
+  "icon": "smart_toy",
+  "permissions": ["settings_read", "settings_write"]
+}
