@@ -54,6 +54,7 @@ Item {
             // ── Header row ────────────────────────────────────────────
             RowLayout {
                 Layout.fillWidth: true
+                Layout.topMargin: 16
                 Text {
                     text: "Settings"
                     color: Theme.surfaceText
