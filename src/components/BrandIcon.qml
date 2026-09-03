@@ -24,10 +24,13 @@ Item {
             + (dark ? "dark" : "light") + "/" + stem + ".svg").toString()
         : ""
     readonly property string _alt: stem.length > 0
+        && primaryImg.status === Image.Error
         ? Qt.resolvedUrl("../../resources/icons/"
             + (dark ? "light" : "dark") + "/" + stem + ".svg").toString()
         : ""
     readonly property string _model: stem.length > 0
+        && primaryImg.status === Image.Error
+        && altImg.status === Image.Error
         ? Qt.resolvedUrl("../../resources/icons/models/" + stem + ".svg").toString()
         : ""
 

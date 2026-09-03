@@ -107,6 +107,34 @@ Rectangle {
         return pruned;
     }
 
+    // Generate a dynamic cache during model search that returns 
+    // the same array instead of rebuild the list at every keystroke
+    property var _rowsCache: []
+    function rowsFor(filter) {
+        var rows = buildRows(filter);
+        var old = _rowsCache;
+        if (old.length === rows.length) {
+            var same = true;
+            for (var i = 0; i < rows.length; i++) {
+                var a = old[i], b = rows[i];
+                if (!a || !b
+                    || a.kind !== b.kind
+                    || a.model !== b.model
+                    || a.providerId !== b.providerId
+                    || a.type !== b.type
+                    || a.name !== b.name
+                    || a.pid !== b.pid
+                    || a.collapsed !== b.collapsed) {
+                    same = false;
+                    break;
+                }
+            }
+            if (same) return old;
+        }
+        _rowsCache = rows;
+        return rows;
+    }
+
     // Model zone (left): label + chevron. Hover highlights the zone
     // (not the tune section) and shows the pointing cursor.
     Item {
@@ -252,7 +280,10 @@ Rectangle {
                 clip: true
                 spacing: 2
                 model: selector.service
-                    ? selector.buildRows(manualEntry.text) : []
+                    ? selector.rowsFor(manualEntry.text) : []
+                // Recycle delegates on scroll instead of destroying
+                // and recreating them (each row is ~30 objects).
+                reuseItems: true
 
                 delegate: Item {
                     id: rowDelegate
