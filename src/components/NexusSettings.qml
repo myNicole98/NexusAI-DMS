@@ -33,7 +33,7 @@ Item {
         anchors.fill: parent
         radius: Theme.cornerRadius
         color: Qt.rgba(Theme.surfaceContainer.r, Theme.surfaceContainer.g,
-                       Theme.surfaceContainer.b, SettingsData.popupTransparency)
+                       Theme.surfaceContainer.b)
     }
 
     Flickable {
