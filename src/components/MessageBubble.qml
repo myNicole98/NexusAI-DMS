@@ -714,7 +714,7 @@ Rectangle {
                 visible: isUser && bubble.content.length > 0
                 iconName: "content_copy"
                 onClicked: Quickshell.execDetached(
-                    ["wl-copy", "--", bubble.content])
+                    ["dms", "cl", "copy", bubble.content])
             }
             HoverIcon {
                 visible: isUser
@@ -735,7 +735,7 @@ Rectangle {
                 visible: !isUser && bubble.content.length > 0
                 iconName: "content_copy"
                 onClicked: Quickshell.execDetached(
-                    ["wl-copy", "--", bubble.content])
+                    ["dms", "cl", "copy", bubble.content])
             }
 
             Text {
@@ -869,7 +869,7 @@ Rectangle {
                         iconName: "content_copy"
                         iconColor: Theme.surfaceVariantText
                         onClicked: Quickshell.execDetached(
-                            ["wl-copy", "--", codeRect.rawCode])
+                            ["dms", "cl", "copy", codeRect.rawCode])
                     }
                 }
             }

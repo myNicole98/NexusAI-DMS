@@ -20,7 +20,6 @@ AI assistant plugin for [DankMaterialShell](https://github.com/AvengeMedia/DankM
 
 ## Requirements
 - `curl`
-- `wl-copy`
 - That's it, you probably already have them
 
 ## Roadmap
