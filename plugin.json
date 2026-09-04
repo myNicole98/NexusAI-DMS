@@ -2,7 +2,7 @@
   "id": "nexusAI",
   "name": "Nexus AI",
   "description": "AI assistant, made to be useful",
-  "version": "1.0.0",
+  "version": "1.0.5",
   "author": "myNicole98",
   "type": "daemon",
   "capabilities": ["slideout"],

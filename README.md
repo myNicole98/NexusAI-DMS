@@ -9,7 +9,8 @@ AI assistant plugin for [DankMaterialShell](https://github.com/AvengeMedia/DankM
 |-|-|-|
 |![alt text](resources/attachments/chat.png) | ![alt text](resources/attachments/coding.png) | ![alt text](resources/attachments/settings.png)
 
-
+## Usage
+- Toggle the plugin: `dms ipc call plugins toggle nexusAI`
 ## Features
 - **Multi-Provider Ready:** Connect to standard cloud APIs or local providers.
 - **Vision Support:** Models with vision can be used with image attachments, even from clipboard
