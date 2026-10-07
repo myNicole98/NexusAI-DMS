@@ -197,6 +197,126 @@ Item {
             // ── Panel card ────────────────────────────────────────────
             // (Panel side toggle moved to the panel top bar.)
 
+            // ── Chat History card ────────────────────────────────────
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 10
+
+                Text {
+                    text: "Chat History"
+                    color: Theme.primary
+                    font.pixelSize: 13
+                    font.bold: true
+                }
+
+                // Toggle chat history
+                Rectangle {
+                    id: historyToggle
+                    Layout.fillWidth: true
+                    height: 56
+                    radius: 8
+                    readonly property bool on:
+                        service ? service.historyEnabled : false
+                    color: historyToggle.on
+                        ? Theme.withAlpha(Theme.primary, 0.14)
+                        : Theme.withAlpha(Theme.surfaceContainerHigh, 0.4)
+                    Behavior on color { ColorAnimation { duration: 220 } }
+
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.margins: 12
+                        spacing: 12
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 2
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: "Save conversations"
+                                color: Theme.surfaceText
+                                font.pixelSize: 13
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: "Toggle to enable chat history support"
+                                color: Theme.surfaceVariantText
+                                font.pixelSize: 11
+                                wrapMode: Text.Wrap
+                            }
+                        }
+
+                        DankToggle {
+                            Layout.alignment: Qt.AlignVCenter
+                            hideText: true
+                            checked: historyToggle.on
+                            onToggled: (checked) => {
+                                if (service) service.setHistoryEnabled(checked);
+                            }
+                        }
+                    }
+                }
+
+                // Two-tap delete chat
+                Rectangle {
+                    id: deleteAllRow
+                    Layout.fillWidth: true
+                    height: 48
+                    radius: 8
+                    property bool armed: false
+                    color: deleteAllRow.armed
+                        ? Theme.withAlpha(Theme.error, 0.18)
+                        : Theme.withAlpha(Theme.surfaceContainerHigh, 0.4)
+                    Behavior on color { ColorAnimation { duration: 220 } }
+
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: 12
+                        anchors.rightMargin: 12
+                        spacing: 12
+
+                        DankIcon {
+                            name: "delete_forever"
+                            size: 20
+                            color: deleteAllRow.armed
+                                ? Theme.error : Theme.surfaceVariantText
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: deleteAllRow.armed
+                                ? "Tap again to confirm"
+                                : "Delete all chats"
+                            color: deleteAllRow.armed
+                                ? Theme.error : Theme.surfaceVariantText
+                            font.pixelSize: 13
+                        }
+                    }
+
+                    Timer {
+                        id: disarmTimer
+                        interval: 4000
+                        onTriggered: deleteAllRow.armed = false
+                    }
+
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            if (!deleteAllRow.armed) {
+                                deleteAllRow.armed = true;
+                                disarmTimer.restart();
+                                return;
+                            }
+                            disarmTimer.stop();
+                            deleteAllRow.armed = false;
+                            if (service) service.deleteAllChats();
+                        }
+                    }
+                }
+            }
+
             Item { Layout.fillHeight: true }
         }
 

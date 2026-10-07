@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Controls
 import QtQuick.Layouts
 import qs.Common
 import qs.Widgets
@@ -8,6 +9,9 @@ Item {
 
     property var service: null
     property var panel: null
+
+    // History drawer visibility; the panel-bar menu button toggles it.
+    property bool historyOpen: false
 
     state: "chat"
     states: [
@@ -158,6 +162,194 @@ Item {
                     }
                 }
             }
+
+            // History drawer
+            Rectangle {
+                id: historyScrim
+                anchors.fill: parent
+                radius: Theme.cornerRadius
+                visible: chat.service && chat.service.historyEnabled
+                opacity: chat.historyOpen ? 1 : 0
+                color: Theme.withAlpha(Theme.surfaceContainerLowest, 0.55)
+                Behavior on opacity { NumberAnimation { duration: 200 } }
+                MouseArea {
+                    anchors.fill: parent
+                    enabled: chat.historyOpen
+                    onClicked: chat.historyOpen = false
+                }
+            }
+
+            Rectangle {
+                id: historyDrawer
+                visible: chat.service && chat.service.historyEnabled
+                         && (chat.historyOpen
+                             || historyDrawer.x > -historyDrawer.width)
+                anchors.top: parent.top
+                anchors.bottom: parent.bottom
+                width: Math.min(314, parent.width * 0.78)
+                radius: Theme.cornerRadius
+                color: Theme.surfaceContainer
+                border.width: 1
+                border.color: Theme.withAlpha(Theme.outlineVariant, 0.7)
+                x: chat.historyOpen ? 0 : -width - 12
+                Behavior on x {
+                    NumberAnimation { duration: 220; easing.type: Easing.OutCubic }
+                }
+
+                Column {
+                    id: drawerCol
+                    anchors.fill: parent
+                    anchors.margins: 8
+                    spacing: 8
+
+                    Text {
+                        text: "Chats"
+                        color: Theme.surfaceText
+                        font.pixelSize: 14
+                        font.bold: true
+                        leftPadding: 4
+                    }
+
+                    Rectangle {
+                        id: newChatRow
+                        width: parent.width
+                        height: 40
+                        radius: 8
+                        color: newChatHover.hovered
+                            ? Theme.withAlpha(Theme.primary, 0.14)
+                            : Theme.withAlpha(Theme.surfaceContainerHigh, 0.4)
+                        Behavior on color { ColorAnimation { duration: 150 } }
+
+                        Row {
+                            anchors.left: parent.left
+                            anchors.leftMargin: 12
+                            anchors.verticalCenter: parent.verticalCenter
+                            spacing: 8
+
+                            DankIcon {
+                                anchors.verticalCenter: parent.verticalCenter
+                                name: "add"
+                                size: 18
+                                color: Theme.primary
+                            }
+
+                            Text {
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: "New chat"
+                                color: Theme.surfaceText
+                                font.pixelSize: 13
+                            }
+                        }
+
+                        HoverHandler {
+                            id: newChatHover
+                            cursorShape: Qt.PointingHandCursor
+                        }
+
+                        TapHandler {
+                            onTapped: {
+                                chat.historyOpen = false;
+                                if (chat.service) chat.service.newChat();
+                            }
+                        }
+                    }
+
+                    Flickable {
+                        id: chatListScroll
+                        width: parent.width
+                        height: parent.height - drawerCol.spacing * 2
+                                - 20 /* header */ - newChatRow.height
+                        contentWidth: width
+                        contentHeight: chatListCol.implicitHeight
+                        clip: true
+                        boundsBehavior: Flickable.StopAtBounds
+
+                        Column {
+                            id: chatListCol
+                            width: chatListScroll.width
+                            spacing: 4
+
+                            Repeater {
+                                model: chat.service ? chat.service.chats : []
+
+                                delegate: Rectangle {
+                                    id: chatRow
+                                    required property var modelData
+                                    readonly property bool isActive:
+                                        chat.service && modelData
+                                        && modelData.id === chat.service.activeChatId
+                                    width: parent.width
+                                    height: 40
+                                    radius: 8
+                                    color: isActive
+                                        ? Theme.withAlpha(Theme.primary, 0.18)
+                                        : (rowHover.hovered
+                                           ? Theme.withAlpha(Theme.surfaceContainerHigh, 0.7)
+                                           : "transparent")
+                                    Behavior on color { ColorAnimation { duration: 150 } }
+
+                                    Text {
+                                        anchors.left: parent.left
+                                        anchors.leftMargin: 12
+                                        anchors.right: rowDelete.left
+                                        anchors.rightMargin: 4
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: (chat.service && chatRow.modelData)
+                                            ? chat.service.chatDisplayTitle(chatRow.modelData)
+                                            : ""
+                                        color: chatRow.isActive
+                                            ? Theme.primary : Theme.surfaceText
+                                        font.pixelSize: 13
+                                        elide: Text.ElideRight
+                                    }
+
+                                    DankActionButton {
+                                        id: rowDelete
+                                        anchors.right: parent.right
+                                        anchors.rightMargin: 4
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        iconName: "delete"
+                                        iconSize: 16
+                                        iconColor: Theme.surfaceVariantText
+                                        opacity: rowHover.hovered ? 1 : 0
+                                        Behavior on opacity {
+                                            NumberAnimation { duration: 150 }
+                                        }
+                                        onClicked: if (chat.service)
+                                            chat.service.deleteChat(chatRow.modelData.id)
+                                    }
+
+                                    HoverHandler {
+                                        id: rowHover
+                                        cursorShape: Qt.PointingHandCursor
+                                    }
+
+                                    TapHandler {
+                                        onTapped: {
+                                            if (!chatRow.modelData) return;
+                                            chat.historyOpen = false;
+                                            if (chat.service)
+                                                chat.service.openChat(chatRow.modelData.id);
+                                        }
+                                    }
+                                }
+                            }
+
+                            Text {
+                                visible: !chat.service
+                                         || chat.service.chats.length === 0
+                                text: "No saved chats yet"
+                                color: Theme.surfaceVariantText
+                                font.pixelSize: 12
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                topPadding: 12
+                            }
+                        }
+
+                        ScrollBar.vertical: DankScrollbar {}
+                    }
+                }
+            }
         }
 
         ChatComposer {
@@ -184,7 +376,7 @@ Item {
             }
             onNewChatRequested: {
                 if (chat.service) {
-                    chat.service.clearChat();
+                    chat.service.newChat();
                     chat.state = "chat";
                 }
             }

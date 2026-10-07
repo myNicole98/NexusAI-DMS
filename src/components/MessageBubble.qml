@@ -658,6 +658,8 @@ Rectangle {
 
                         delegate: Rectangle {
                             required property int index
+                            readonly property var entry:
+                                bubble.attachmentsArr[index] || null
                             width: 120
                             height: 84
                             radius: 6
@@ -668,10 +670,21 @@ Rectangle {
                                 anchors.fill: parent
                                 asynchronous: true
                                 fillMode: Image.PreserveAspectCrop
-                                source: bubble.attachmentsArr[index]
-                                    ? "data:" + bubble.attachmentsArr[index].mime
-                                      + ";base64," + bubble.attachmentsArr[index].data
+                                visible: entry && !entry.stripped
+                                         && (entry.data || "").length > 0
+                                source: visible
+                                    ? "data:" + entry.mime + ";base64," + entry.data
                                     : ""
+                            }
+
+                            // Persisted chats strip base64 payloads —
+                            // show a placeholder chip instead.
+                            DankIcon {
+                                anchors.centerIn: parent
+                                name: "image"
+                                size: 22
+                                visible: entry && entry.stripped
+                                color: Theme.surfaceVariantText
                             }
                         }
                     }

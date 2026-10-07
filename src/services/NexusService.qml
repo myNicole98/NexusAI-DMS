@@ -10,6 +10,7 @@ import "../lib/PromptPresets.js" as PromptPresets
 import "../lib/McpTools.js" as McpTools
 import "../lib/WebTools.js" as WebTools
 import "../lib/ContextWindows.js" as ContextWindows
+import "../lib/ChatHistory.js" as ChatHistory
 
 Item {
     id: root
@@ -22,6 +23,20 @@ Item {
     readonly property int messageCount: messagesModel.count
     property int _idCounter: 0
     property alias isStreaming: streaming.isStreaming
+
+    // ── Chat history (opt-in) ─────────────────────────────────────
+    // Store records {id, title, createdAt, updatedAt, messages[]},
+    // newest-updated first; persisted as JSON "chats". Messages reuse
+    // the exact ListModel role shape so restore = clear + append.
+    property bool historyEnabled: false      // persisted
+    property var chats: []                   // persisted as JSON "chats"
+    property string activeChatId: ""         // persisted; "" = fresh chat
+    property int _chatCounter: 0
+    // Title-generation capture state (chat id + wire format frozen at
+    // fire time — the user may switch chats while the fetch runs).
+    property string _titleTargetChatId: ""
+    property string _titleTargetFormat: ""
+    property string _titleStdin: ""
 
     // ── Multi-provider state ──────────────────────────────────────
     // Instances are records {id, type, name, baseUrl, checkedModels[],
@@ -196,6 +211,18 @@ Item {
         webToolsEnabled = PluginService.loadPluginData(pluginId, "webToolsEnabled", false) === true;
         webSearchEnabled = PluginService.loadPluginData(pluginId, "webSearchEnabled", true) === true;
         webFetchEnabled = PluginService.loadPluginData(pluginId, "webFetchEnabled", true) === true;
+        historyEnabled = PluginService.loadPluginData(pluginId, "historyEnabled", false) === true;
+        chats = ChatHistory.normalizeStore(PluginService.loadPluginData(pluginId, "chats", "[]"));
+        _chatCounter = 0;
+        activeChatId = "";
+        var wantedChat = String(PluginService.loadPluginData(pluginId, "activeChatId", ""));
+        for (var hc = 0; hc < chats.length; hc++) {
+            var hrec = chats[hc];
+            var hm = /^c(\d+)$/.exec(hrec ? String(hrec.id) : "");
+            if (hm) _chatCounter = Math.max(_chatCounter, parseInt(hm[1], 10));
+            if (hrec && hrec.id === wantedChat) activeChatId = wantedChat;
+        }
+        if (activeChatId !== "") _loadChatIntoModel(activeChatId);
         // Legacy single-server MCP keys → one multi-instance entry.
         var legacyMcpUrl = String(PluginService.loadPluginData(pluginId, "mcpUrl", "")).trim();
         var legacyMcpEnabled = PluginService.loadPluginData(pluginId, "mcpEnabled", false) === true;
@@ -1134,6 +1161,285 @@ Item {
         placeholder = pickPlaceholder();
     }
 
+    // ── Chat history store ────────────────────────────────────────
+
+    function setHistoryEnabled(enabled) {
+        var v = !!enabled;
+        if (historyEnabled === v) return;
+        historyEnabled = v;
+        saveSetting("historyEnabled", v);
+    }
+
+    function _findChat(id) {
+        for (var i = 0; i < chats.length; i++)
+            if (chats[i] && chats[i].id === id) return chats[i];
+        return null;
+    }
+
+    // Reassignment pattern (mirrors _touchProviders): only a fresh
+    // array re-evaluates Repeater/delegate bindings over `chats`.
+    function _touchChats() {
+        var clones = [];
+        for (var i = 0; i < chats.length; i++)
+            clones.push(chats[i] ? Object.assign({}, chats[i]) : null);
+        chats = clones;
+    }
+
+    // Persist with image payloads stripped (ChatHistory).
+    function _persistChats() {
+        var out = [];
+        for (var i = 0; i < chats.length; i++) {
+            var s = ChatHistory.sanitizeForPersist(chats[i]);
+            if (s) out.push(s);
+        }
+        saveSetting("chats", JSON.stringify(out));
+    }
+
+    function _rowsFromModel() {
+        var out = [];
+        for (var i = 0; i < messagesModel.count; i++) {
+            var m = messagesModel.get(i);
+            out.push({ id: m.id, role: m.role, content: m.content,
+                       thinking: m.thinking, toolLog: m.toolLog,
+                       attachments: m.attachments, usage: m.usage,
+                       modelUsed: m.modelUsed,
+                       modelProviderId: m.modelProviderId,
+                       state: m.state, stats: m.stats,
+                       timestamp: m.timestamp });
+        }
+        return out;
+    }
+
+    function _loadChatIntoModel(id) {
+        var rec = _findChat(id);
+        if (!rec) return;
+        messagesModel.clear();
+        for (var i = 0; i < rec.messages.length; i++) {
+            var m = rec.messages[i];
+            // Fill every role: ListModel roles are fixed by the first
+            // append, so partial records must not shape the model.
+            messagesModel.append({
+                id: m.id, role: m.role, content: m.content || "",
+                thinking: m.thinking || "", toolLog: m.toolLog || "[]",
+                attachments: m.attachments || "[]", usage: m.usage || "",
+                modelUsed: m.modelUsed || "",
+                modelProviderId: m.modelProviderId || "",
+                state: m.state || "done", stats: m.stats || "",
+                timestamp: m.timestamp || 0
+            });
+        }
+    }
+
+    // Snapshot the live conversation into the store (allocating its id
+    // on first save), newest-first, then persist. No-op when history
+    // is off or the model holds no user turns (no empty stubs).
+    function _saveActiveChat() {
+        if (!historyEnabled) return;
+        var hasUser = false;
+        for (var i = 0; i < messagesModel.count; i++)
+            if (messagesModel.get(i).role === "user") { hasUser = true; break; }
+        if (!hasUser) return;
+        var now = Date.now();
+        if (activeChatId === "") {
+            _chatCounter++;
+            activeChatId = "c" + _chatCounter;
+            saveSetting("activeChatId", activeChatId);
+        }
+        var rec = _findChat(activeChatId);
+        if (rec) {
+            rec.updatedAt = now;
+            rec.messages = _rowsFromModel();
+        } else {
+            chats.unshift({ id: activeChatId, title: "", createdAt: now,
+                            updatedAt: now, messages: _rowsFromModel() });
+        }
+        chats.sort(function (a, b) { return (b.updatedAt || 0) - (a.updatedAt || 0); });
+        _touchChats();
+        _persistChats();
+    }
+
+    // Fresh editor: the current chat is already auto-saved (or empty
+    // and discarded), so just drop the view. Doubles as the clear button
+    // when history is off (_saveActiveChat no-ops).
+    function newChat() {
+        if (isStreaming) streaming.cancel();
+        _saveActiveChat();
+        editingMessageId = "";
+        messagesModel.clear();
+        activeChatId = "";
+        saveSetting("activeChatId", "");
+        lastUsage = null;
+        placeholder = pickPlaceholder();
+    }
+
+    function openChat(id) {
+        if (!historyEnabled) return;
+        var clean = String(id || "");
+        var rec = _findChat(clean);
+        if (!rec) return;
+        if (clean === activeChatId) return;
+        // Cancel a live stream first: cancel() emits streamCancelled,
+        // whose handler stamps the in-flight row "cancelled" and
+        // snapshots the outgoing chat before the swap.
+        if (isStreaming) { streaming.cancel(); _saveActiveChat(); }
+        else _saveActiveChat();
+        activeChatId = clean;
+        saveSetting("activeChatId", clean);
+        _loadChatIntoModel(clean);
+        editingMessageId = "";
+        lastUsage = null;
+        placeholder = pickPlaceholder();
+    }
+
+    function deleteChat(id) {
+        // Deleting the active chat mid-stream: cancel() first — its
+        // synchronous cancelled→save cycle lands on the still-active
+        // chat before the removal below, so the stream can't
+        // resurrect the chat under a fresh id afterward.
+        if (isStreaming && activeChatId === id) streaming.cancel();
+        var list = [];
+        for (var i = 0; i < chats.length; i++)
+            if (chats[i] && chats[i].id !== id) list.push(chats[i]);
+        chats = list;
+        if (activeChatId === id) {
+            activeChatId = "";
+            saveSetting("activeChatId", "");
+            messagesModel.clear();
+            lastUsage = null;
+        }
+        _persistChats();
+    }
+
+    function deleteAllChats() {
+        chats = [];
+        if (isStreaming) streaming.reset();
+        activeChatId = "";
+        saveSetting("activeChatId", "");
+        editingMessageId = "";
+        messagesModel.clear();
+        lastUsage = null;
+        placeholder = pickPlaceholder();
+        _persistChats();
+    }
+
+    // UI-facing label: model title once set, else fallback truncation
+    // of the first user turn.
+    function chatDisplayTitle(chat) {
+        if (!chat) return "";
+        if (chat.title && chat.title.length > 0) return chat.title;
+        return _fallbackTitleFor(chat);
+    }
+
+    function _fallbackTitleFor(rec) {
+        var msgs = rec && rec.messages ? rec.messages : [];
+        for (var i = 0; i < msgs.length; i++) {
+            var m = msgs[i];
+            if (m && m.role === "user")
+                return ChatHistory.fallbackTitle(m.content);
+        }
+        return "";
+    }
+
+    // After any terminal message state: persist the chat and, on the
+    // first completed exchange, fire title generation. Entirely gated
+    // on the master switch — dead code while history is off.
+    function _onTurnFinished() {
+        if (!historyEnabled) return;
+        _saveActiveChat();
+        _maybeGenerateTitle();
+    }
+
+    function _maybeGenerateTitle() {
+        if (titleFetcher.running) return;
+        var rec = _findChat(activeChatId);
+        if (!rec || rec.title.length > 0) return;
+        var u = "", a = "";
+        for (var i = 0; i < messagesModel.count; i++) {
+            var m = messagesModel.get(i);
+            if (m.role === "user" && u === "") u = m.content;
+            else if (m.role === "assistant" && u !== "" && a === "") a = m.content;
+        }
+        if (u === "" || String(a).trim() === "") return;
+        var inst = activeInstance;
+        if (!inst || !activeModel) return;
+        var req = Providers.buildChatRequest(inst, {
+            sessionKey: sessionKeys[inst.id] || "",
+            model: activeModel,
+            rawMessages: true,
+            messages: [{ role: "user",
+                         content: ChatHistory.titlePrompt(u, a) }],
+            systemPrompt: "",
+            temperature: 0.3,
+            maxTokens: 30,
+            timeoutSeconds: 30,
+            stream: false
+        });
+        if (!req) return;
+        _titleTargetChatId = activeChatId;
+        _titleTargetFormat = activeFormat;
+        _titleStdin = req.body;
+        titleFetcher.stdinEnabled = true;
+        titleFetcher.command = req.cmd;
+        titleFetcher.running = true;
+    }
+
+    // One-shot non-streaming curl for the title (modelsFetcher recipe;
+    // never StreamingService). onExited runs after onStreamFinished —
+    // the cleared _titleTargetChatId makes the second _applyTitle a no-op.
+    Process {
+        id: titleFetcher
+        running: false
+        stdinEnabled: true
+
+        onRunningChanged: {
+            if (running && root._titleStdin) {
+                titleFetcher.write(root._titleStdin);
+                titleFetcher.stdinEnabled = false;
+                root._titleStdin = "";
+            }
+        }
+
+        stdout: StdioCollector {
+            id: titleOut
+            onStreamFinished: {
+                var parsed = StreamParser.extractHttpStatus(titleOut.text);
+                var text = (parsed.status >= 200 && parsed.status < 400)
+                    ? StreamParser.extractNonStreamingText(
+                          parsed.body, root._titleTargetFormat)
+                    : "";
+                root._applyTitle(ChatHistory.cleanTitle(text));
+            }
+        }
+
+        onExited: (exitCode, exitStatus) => {
+            if (exitCode !== 0) root._applyTitle("");
+        }
+
+        stderr: StdioCollector {
+            id: titleErr
+            onStreamFinished: {
+                if (titleErr.text.length > 0)
+                    console.warn("NexusAI title: curl stderr = " + titleErr.text);
+            }
+        }
+    }
+
+    // Land a generated title on its chat by capture-time id (the user
+    // may have switched away). Empty/failed results fall back to the
+    // truncated first prompt. Titles only — messages never re-persist.
+    function _applyTitle(cleaned) {
+        var id = _titleTargetChatId;
+        _titleTargetChatId = "";
+        if (!id) return;
+        var rec = _findChat(id);
+        if (!rec) return;                       // deleted meanwhile
+        if (rec.title.length > 0) return;       // already titled
+        rec.title = (cleaned && cleaned.length > 0)
+            ? cleaned : _fallbackTitleFor(rec);
+        _touchChats();
+        _persistChats();
+    }
+
     function pickPlaceholder() {
         var lines = _placeholderLines;
         if (!lines || lines.length === 0) return "Ask anything…";
@@ -1498,16 +1804,19 @@ Item {
             });
             if (usage) root.lastUsage = usage;
             root._afterResponseProbe();
+            root._onTurnFinished();
         }
 
         onStreamError: (streamId, message) => {
             root._stopWatchdog();
             root._setMsg(streamId, { state: "error", content: message, stats: "" });
+            root._onTurnFinished();
         }
 
         onStreamCancelled: (streamId, stats) => {
             root._stopWatchdog();
             root._setMsg(streamId, { state: "cancelled", stats: stats });
+            root._onTurnFinished();
         }
     }
 

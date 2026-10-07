@@ -389,7 +389,8 @@ function toolsForGemini(tools) {
 // wire format. opts: {sessionKey, model, messages, systemPrompt,
 // temperature (number|null), maxTokens (0 = default), numCtx
 // (0 = omit; ollama only), timeoutSeconds, envLookup?, tools?,
-// rawMessages?}. Null when base/model unusable.
+// rawMessages?, stream (false = one-shot non-streaming body/URL;
+// used by title generation)}. Null when base/model unusable.
 function buildChatRequest(instance, opts) {
     opts = opts || {};
     var base = normalizeBaseUrl(instance && instance.baseUrl);
@@ -397,6 +398,7 @@ function buildChatRequest(instance, opts) {
     if (!base || !model) return null;
 
     var format = formatOf(instance);
+    var stream = opts.stream !== false;
     var payload = opts.rawMessages
         ? { system: (opts.systemPrompt || "").trim(), messages: opts.messages || [] }
         : buildApiPayload(instance, opts);
@@ -446,13 +448,15 @@ function buildChatRequest(instance, opts) {
         }
         body = { model: model,
                  max_tokens: opts.maxTokens > 0 ? opts.maxTokens : 4096,
-                 messages: amsgs, stream: true };
+                 messages: amsgs };
+        if (stream) body.stream = true;
         if (typeof opts.temperature === "number") body.temperature = opts.temperature;
         if (payload.system) body.system = payload.system;
         if (payload.tools && payload.tools.length > 0)
             body.tools = toolsForAnthropic(payload.tools);
     } else if (format === "gemini") {
-        url = stripVersion(base, true) + "/v1beta/models/" + model + ":streamGenerateContent?alt=sse";
+        url = stripVersion(base, true) + "/v1beta/models/" + model
+              + (stream ? ":streamGenerateContent?alt=sse" : ":generateContent");
         var contents = [];
         for (i = 0; i < payload.messages.length; i++) {
             var gm = payload.messages[i];
@@ -533,7 +537,7 @@ function buildChatRequest(instance, opts) {
                              content: nm.content });
             }
         }
-        body = { model: model, messages: omsgs, stream: true };
+        body = { model: model, messages: omsgs, stream: stream };
         var oopts = {};
         if (opts.numCtx > 0) oopts.num_ctx = opts.numCtx;
         if (typeof opts.temperature === "number")
@@ -556,8 +560,11 @@ function buildChatRequest(instance, opts) {
             else
                 msgs.push(om);
         }
-        body = { model: model, messages: messagesForOpenai(msgs), stream: true,
-                 stream_options: { include_usage: true } };
+        body = { model: model, messages: messagesForOpenai(msgs) };
+        if (stream) {
+            body.stream = true;
+            body.stream_options = { include_usage: true };
+        }
         if (typeof opts.temperature === "number") body.temperature = opts.temperature;
         if (opts.maxTokens > 0) body.max_tokens = opts.maxTokens;
         // No options block on openai: /v1 pins context to the server

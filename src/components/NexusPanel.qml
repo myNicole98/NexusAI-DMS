@@ -158,13 +158,40 @@ PanelWindow {
                         anchors.margins: Theme.spacingL
                         height: 36
 
-                        Text {
+                        Row {
+                            id: barLead
                             anchors.left: parent.left
                             anchors.verticalCenter: parent.verticalCenter
-                            text: "Nexus AI"
-                            color: Theme.surfaceText
-                            font.pixelSize: 16
-                            font.weight: Font.Medium
+                            spacing: 2
+
+                            DankActionButton {
+                                id: historyButton
+                                // Hidden while the settings page overlays
+                                // the chat — the drawer would otherwise
+                                // toggle invisibly behind it.
+                                visible: root.service
+                                         && root.service.historyEnabled
+                                         && contentLoader.item
+                                         && contentLoader.item.state === "chat"
+                                iconName: contentLoader.item
+                                          && contentLoader.item.historyOpen
+                                          ? "menu_open" : "menu"
+                                iconSize: Theme.iconSize - 4
+                                iconColor: Theme.surfaceText
+                                onClicked: {
+                                    if (!contentLoader.item) return;
+                                    contentLoader.item.historyOpen =
+                                        !contentLoader.item.historyOpen;
+                                }
+                            }
+
+                            Text {
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: "Nexus AI"
+                                color: Theme.surfaceText
+                                font.pixelSize: 16
+                                font.weight: Font.Medium
+                            }
                         }
 
                         Row {
@@ -177,7 +204,7 @@ PanelWindow {
                                 iconName: "delete_sweep"
                                 iconSize: Theme.iconSize - 4
                                 iconColor: Theme.surfaceText
-                                onClicked: if (root.service) root.service.clearChat()
+                                onClicked: if (root.service) root.service.newChat()
                             }
 
                             DankActionButton {
