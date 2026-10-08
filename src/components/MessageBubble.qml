@@ -232,6 +232,8 @@ Rectangle {
             var unescaped = unescapeStrings(parsed);
             text = JSON.stringify(unescaped, null, 2);
         } catch (e) { /* not JSON, show as-is */ }
+        if (text.length > 300)
+            text = text.replace(/([^\n]{300})/g, "$1\n");
         return text;
     }
 

@@ -773,7 +773,7 @@ Item {
         inst.enabled = !!enabled;
         if (!inst.enabled) {
             // Disabling an MCP server should immediately drop its
-            // connection so we don't keep spawning mcp-remote processes.
+            // connection so we don't keep spawning curl stream processes.
             var svc = _mcpServiceFor(id);
             if (svc && svc.isConnected) svc.disconnectFromServer();
         }
@@ -1647,6 +1647,13 @@ Item {
             entry.state = phase === "error" ? "error" : "ok";
             entry.endMs = Date.now();
             var text = String(detail || "");
+            
+            // Pretty-print JSON
+            try {
+                var pj = JSON.parse(text);
+                if (pj !== undefined && pj !== null)
+                    text = JSON.stringify(pj, null, 2);
+            } catch (e) { /* not JSON — shown as-is */ }
             entry.detail = text.length > 20000 ? text.substring(0, 20000) + "…" : text;
             if (idx >= 0) next[idx] = entry;
             else next.push(entry);
@@ -1770,6 +1777,7 @@ Item {
         if (!inst) return;
         svc.mcpUrl = String(inst.url || "");
         svc.mcpToken = resolveMcpToken(serverId, String(inst.name || ""));
+        svc.toolTimeoutSeconds = root.timeoutSeconds;
     }
 
     NativeToolsService {
