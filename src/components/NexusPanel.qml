@@ -29,6 +29,8 @@ PanelWindow {
     }
 
     function hide() {
+        if (contentLoader.item && contentLoader.item.forceActiveFocus)
+            contentLoader.item.forceActiveFocus();
         isVisible = false;
     }
 

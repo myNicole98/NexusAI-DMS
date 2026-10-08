@@ -19,6 +19,9 @@ Item {
         State { name: "settings" }
     ]
 
+    // Save on leave
+    onStateChanged: if (state !== "settings") chat.forceActiveFocus();
+
     // Called by NexusPanel when the panel finishes sliding in.
     function focusInput() {
         if (state === "chat" && composer.focusInput)
@@ -604,5 +607,6 @@ Item {
             NumberAnimation { duration: 220; easing.type: Easing.OutCubic }
         }
         service: chat.service
+        onDismissRequested: chat.state = "chat"
     }
 }

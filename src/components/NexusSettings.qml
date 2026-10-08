@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtQuick.Window
 import qs.Common
 import qs.Widgets
 import "../lib/PromptPresets.js" as PromptPresets
@@ -9,6 +10,9 @@ Item {
     id: settings
 
     property var service: null
+
+    // ESC to dismiss
+    signal dismissRequested()
 
     // Construction-time and service-load-time binding evaluation must not
     // write back to settings. Component.onCompleted fires bottom-up (before
@@ -20,6 +24,34 @@ Item {
     property bool customMode: false
 
     Component.onCompleted: Qt.callLater(() => { settings._loading = false })
+
+    // Commit on unfocus
+    TapHandler {
+        acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
+        onTapped: {
+            var p = point.position;
+            var win = settings.Window.window;
+            var focused = win ? win.activeFocusItem : null;
+            if (!focused || focused === settings) return;
+            if (focused.text === undefined) return;   // not a text field
+            var tl = focused.mapToItem(settings, 0, 0);
+            if (p.x < tl.x || p.x > tl.x + focused.width
+                || p.y < tl.y || p.y > tl.y + focused.height)
+                settings.forceActiveFocus();
+        }
+    }
+
+    // ESC to unfocus and commit
+    Keys.onEscapePressed: (event) => {
+        var win = settings.Window.window;
+        var focused = win ? win.activeFocusItem : null;
+        if (focused && focused !== settings && focused.text !== undefined) {
+            settings.forceActiveFocus();
+            event.accepted = true;
+            return;
+        }
+        settings.dismissRequested();
+    }
 
     function persist(key, value) {
         // property assignment happens at call site; persist immediately
