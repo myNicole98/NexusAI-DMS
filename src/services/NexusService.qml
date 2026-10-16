@@ -985,7 +985,8 @@ Item {
             messagesModel.append({
                 id: _nextId(), role: "system", content:
                     "Add a provider and pick a model in settings.",
-                thinking: "", toolLog: "[]", attachments: "[]", usage: "",
+                thinking: "", toolLog: "[]", flow: "[]", attachments: "[]",
+                usage: "",
                 modelUsed: "", modelProviderId: "",
                 state: "error", stats: "", timestamp: Date.now()
             });
@@ -1221,6 +1222,7 @@ Item {
             messagesModel.append({
                 id: m.id, role: m.role, content: m.content || "",
                 thinking: m.thinking || "", toolLog: m.toolLog || "[]",
+                flow: m.flow || "[]",
                 attachments: m.attachments || "[]", usage: m.usage || "",
                 modelUsed: m.modelUsed || "",
                 modelProviderId: m.modelProviderId || "",
@@ -1521,6 +1523,7 @@ Item {
             id: _nextId(), role: role, content: content, thinking: "",
             // JSON strings — ListModel can't hold JS object arrays.
             toolLog: "[]",
+            flow: "[]",
             attachments: "[]",
             usage: "",
             modelUsed: activeModel,
@@ -1618,15 +1621,58 @@ Item {
     property string _streamContent: ""
     property string _streamThinking: ""
 
+    // Chronological response structure ("flow" role): thinking boxes,
+    // text segments and tool chips in the order the model produced
+    // them. k/x entries hold [a,b) offsets into the thinking/content
+    // mirrors; c entries index into toolLog. Recorded at phase
+    // transitions and tool calls; flushed with the mirrors.
+    property var _flow: []
+    property string _flowPhase: "none"   // none | k (thinking) | x (text)
+    property real _flowPhaseStartMs: 0
+    // Own dirty flag: tool-call chips must flush even when the mirror
+    // content is already clean (deltas stopped before the call).
+    property bool _flowDirty: false
+
+    function _flowClose() {
+        if (_flowPhase === "none") return;
+        var e = _flow[_flow.length - 1];
+        if (e) {
+            if (_flowPhase === "k") {
+                e.b = _streamThinking.length;
+                e.ms = Date.now() - _flowPhaseStartMs;
+            } else if (_flowPhase === "x") {
+                e.b = _streamContent.length;
+            }
+        }
+        _flowPhase = "none";
+        _flowDirty = true;
+    }
+
+    function _flowOpen(t) {
+        if (t === "k") {
+            _flow.push({ t: "k", a: _streamThinking.length,
+                         b: _streamThinking.length, ms: 0 });
+            _flowPhaseStartMs = Date.now();
+        } else {
+            _flow.push({ t: "x", a: _streamContent.length,
+                         b: _streamContent.length });
+        }
+        _flowPhase = t;
+        _flowDirty = true;
+    }
+
     function _clearStreamBuffer() {
         _mirrorStreamId = "";
         _pendStreamId = "";
         _streamContent = "";
         _streamThinking = "";
+        _flow = [];
+        _flowPhase = "none";
+        _flowDirty = false;
     }
 
     function _flushStreamBuffer() {
-        if (_pendStreamId.length === 0) return;   // nothing new to write
+        if (_pendStreamId.length === 0 && !_flowDirty) return;
         _pendStreamId = "";
         var i = _indexOfId(_mirrorStreamId);
         if (i < 0) {
@@ -1637,6 +1683,27 @@ Item {
             messagesModel.setProperty(i, "content", _streamContent);
         if (_streamThinking.length > 0)
             messagesModel.setProperty(i, "thinking", _streamThinking);
+        // Persist the flow. The open (live) entry extends to the
+        // current mirror lengths — never prune it for a stale b, or
+        // the in-progress phase would vanish until it closes. Closed
+        // empty entries (a phase that opened without deltas) drop.
+        var flowOut = [];
+        for (var f = 0; f < _flow.length; f++) {
+            var e = _flow[f];
+            if (!e) continue;
+            if (f === _flow.length - 1 && _flowPhase !== "none") {
+                if (_flowPhase === "k")
+                    e = { t: "k", a: e.a, b: _streamThinking.length, ms: 0 };
+                else
+                    e = { t: "x", a: e.a, b: _streamContent.length };
+                if (e.b > e.a) flowOut.push(e);
+                continue;
+            }
+            if ((e.t === "k" || e.t === "x") && e.b <= e.a) continue;
+            flowOut.push(e);
+        }
+        messagesModel.setProperty(i, "flow", JSON.stringify(flowOut));
+        _flowDirty = false;
     }
 
     Timer {
@@ -1651,6 +1718,12 @@ Item {
             _mirrorStreamId = id;
             _streamContent = "";
             _streamThinking = "";
+            _flow = [];
+            _flowPhase = "none";
+        }
+        if (_flowPhase !== "x") {
+            _flowClose();
+            _flowOpen("x");
         }
         _streamContent += delta;
         _pendStreamId = id;
@@ -1663,6 +1736,12 @@ Item {
             _mirrorStreamId = id;
             _streamContent = "";
             _streamThinking = "";
+            _flow = [];
+            _flowPhase = "none";
+        }
+        if (_flowPhase !== "k") {
+            _flowClose();
+            _flowOpen("k");
         }
         _streamThinking += delta;
         _pendStreamId = id;
@@ -1682,7 +1761,15 @@ Item {
         var next = log.slice();
         var name = String(toolName || "");
         if (phase === "call") {
-            // thinkingAt interleaves the chip into the pondering flow.
+            // Flow: close the current phase and record the chip; the
+            // next delta opens a fresh phase (tool rounds relaunch).
+            _flowClose();
+            _flow.push({ t: "c", i: next.length });
+            _flowPhase = "none";
+            _flowDirty = true;
+            // Flush AFTER the chip lands in the flow, so the chip is
+            // visible for the whole tool execution (the next flush
+            // would otherwise only happen once the model talks again).
             _flushStreamBuffer();
             next.push({ name: name, state: "running", detail: "",
                         startMs: Date.now(), endMs: 0,
@@ -1858,6 +1945,7 @@ Item {
 
         onStreamFinalized: (streamId, stats, usage) => {
             root._stopWatchdog();
+            root._flowClose();
             root._flushStreamBuffer();
             root._setMsg(streamId, {
                 state: "done", stats: stats,
@@ -1877,6 +1965,8 @@ Item {
 
         onStreamCancelled: (streamId, stats) => {
             root._stopWatchdog();
+            // Cancelled keeps the partial content — flush it.
+            root._flowClose();
             root._flushStreamBuffer();
             root._setMsg(streamId, { state: "cancelled", stats: stats });
             root._onTurnFinished();

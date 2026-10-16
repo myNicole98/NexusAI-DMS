@@ -117,39 +117,28 @@ Rectangle {
         return SyntaxHighlight.highlightCode(code, lang, mdColors.syntax);
     }
 
-    // ── Thinking phase tracking ───────────────────────────────────
-    // Auto-opens on stream start, auto-closes at first content token
-    // (manual re-open sticks). Wall time drives the "Pondered …" label.
-    property bool thinkingExpanded: false
-    property real _thinkStartMs: 0
-    property real _thinkDurationMs: 0
+    // ── Chronological flow (interleaved pondering) ────────────────
+    // The flow role records the response structure in production
+    // order: k = thinking box, x = text segment ([a,b) offsets into
+    // the thinking/content strings), c = tool chip (toolLog index).
+    // Each k renders its own collapsible pondering box; a chip
+    // directly following a box renders INSIDE it, otherwise inline.
+    // Messages without a flow (old chats) synthesize the legacy
+    // layout: one box with chips interleaved by thinkingAt, then the
+    // whole content.
+    property string flow: "[]"
 
-    // ── Interleaved pondering + tool chips ────────────────────────
-    // Thinking renders split at each call's thinkingAt with chips in
-    // between. Fade/reveal applies to the TAIL only; head segments
-    // are frozen.
-    property int _thinkSplit: 0
-    readonly property string thinkTail:
-        thinking.substring(Math.min(_thinkSplit, thinking.length))
-
-    onToolLogArrChanged: {
-        var mx = 0;
-        for (var i = 0; i < toolLogArr.length; i++) {
-            var e = toolLogArr[i];
-            if (e && e.thinkingAt > mx) mx = e.thinkingAt;
-        }
-        if (mx > _thinkSplit) {
-            _thinkSplit = mx;
-            // Fresh tail — restart the progressive reveal so the
-            // post-call thinking streams in like any other round.
-            shownThinking = "";
-            _thinkFadeTail = "";
-        }
+    readonly property var flowArr: {
+        try { var v = JSON.parse(bubble.flow || "[]");
+              return Array.isArray(v) ? v : []; }
+        catch (e) { return []; }
     }
 
-    // Segments split at each tool call's thinkingAt; only the trailing
-    // one is live. Count-based Repeater keeps delegates stable.
-    readonly property var thinkSegments: {
+    readonly property var effectiveFlow: {
+        if (flowArr.length > 0) return flowArr;
+        // User rows render through the dedicated user bubble — no
+        // flow entries (would double-render the text).
+        if (bubble.isUser) return [];
         var segs = [];
         var log = bubble.toolLogArr;
         var prev = 0;
@@ -158,23 +147,108 @@ Rectangle {
             var at = e && e.thinkingAt ? e.thinkingAt : 0;
             if (at > thinking.length) at = thinking.length;
             if (at < prev) at = prev;
-            var txt = thinking.substring(prev, at);
-            if (txt.length > 0)
-                segs.push({ type: "text", text: txt, live: false });
-            segs.push({ type: "tool", idx: i });
+            if (at > prev) segs.push({ t: "k", a: prev, b: at, ms: 0 });
+            segs.push({ t: "c", i: i });
             prev = at;
         }
-        var tail = thinking.substring(prev);
-        if (tail.length > 0 || segs.length === 0)
-            segs.push({ type: "text", text: tail, live: true });
+        if (thinking.length > prev)
+            segs.push({ t: "k", a: prev, b: thinking.length, ms: 0 });
+        if (segs.length === 0 && thinking.length > 0)
+            segs.push({ t: "k", a: 0, b: thinking.length, ms: 0 });
+        if (content.length > 0)
+            segs.push({ t: "x", a: 0, b: content.length });
         return segs;
     }
 
-    // Static markdown for frozen head segments (no fade machinery —
-    // those rounds are complete).
-    function staticThinkHtml(text) {
+    // Render model: chips right after a box are absorbed into it, and
+    // the LAST entry of an active stream is live — its range extends
+    // to the current string lengths (the service persists open
+    // entries with a stale b).
+    readonly property var flowRender: {
+        var src = bubble.effectiveFlow;
+        var streaming = bubble.msgState === "streaming";
+        var out = [];
+        for (var i = 0; i < src.length; i++) {
+            var e = src[i];
+            if (!e) continue;
+            var live = streaming && i === src.length - 1;
+            if (e.t === "k") {
+                var box = { t: "k", a: e.a,
+                            b: live ? bubble.thinking.length : e.b,
+                            ms: e.ms || 0, chips: [], live: live,
+                            srcIdx: i };
+                var j = i + 1;
+                var busy = false;
+                while (j < src.length && src[j] && src[j].t === "c") {
+                    box.chips.push(src[j].i);
+                    var te = bubble.toolLogArr[src[j].i];
+                    if (te && te.state === "running") busy = true;
+                    j++;
+                }
+                // A box whose tool is still executing is NOT done:
+                // stays expanded ("Pondering…") until the call returns.
+                box.busy = busy;
+                out.push(box);
+                i = j - 1;
+            } else if (e.t === "x") {
+                out.push({ t: "x", a: e.a,
+                           b: live ? bubble.content.length : e.b,
+                           live: live });
+            } else if (e.t === "c") {
+                out.push({ t: "c", i: e.i, live: live });
+            }
+        }
+        return out;
+    }
+
+    // Settled-render cache: closed boxes/segments re-evaluate their
+    // bindings whenever the flow rebuilds; exact-text caching keeps
+    // those re-renders free. Cleared on theme change (colors are
+    // baked into the html).
+    property var _segCache: ({ keys: [], htmls: [] })
+
+    function _cachedSegHtml(text) {
         if (!text) return "";
-        return Markdown.markdownToHtml(text, mdColors, _highlight);
+        var c = _segCache;
+        for (var i = 0; i < c.keys.length; i++)
+            if (c.keys[i] === text) return c.htmls[i];
+        var html = Markdown.markdownToHtml(text, mdColors, _highlight);
+        c.keys.push(text);
+        c.htmls.push(html);
+        if (c.keys.length > 40) { c.keys.shift(); c.htmls.shift(); }
+        return html;
+    }
+
+    function staticThinkHtml(text) {
+        return _cachedSegHtml(text);
+    }
+
+    // Closed flow entries render from the final strings.
+    function entryThinkHtml(a, b) {
+        return _cachedSegHtml(thinking.substring(a, b));
+    }
+
+    function entrySegs(a, b) {
+        var segs = Markdown.splitCodeSegments(content.substring(a, b));
+        for (var i = 0; i < segs.length; i++)
+            if (segs[i].type === "text")
+                segs[i].html = _cachedSegHtml(segs[i].text);
+        return segs;
+    }
+
+    // Per-box expansion state (srcIdx → bool). Default: the live box
+    // is open, closed boxes collapsed; a manual toggle sticks.
+    property var _openBoxes: ({})
+
+    function isBoxOpen(idx, live) {
+        if (_openBoxes[idx] === undefined) return live;
+        return _openBoxes[idx];
+    }
+
+    function toggleBox(idx, live) {
+        var m = Object.assign({}, _openBoxes);
+        m[idx] = !isBoxOpen(idx, live);
+        _openBoxes = m;
     }
 
     // Per-tool-entry expansion state (index in toolLog → bool).
@@ -240,12 +314,10 @@ Rectangle {
         return text;
     }
 
-    readonly property bool thinkingDone: thinking.length > 0 &&
-        (content.length > 0 || !isStreaming)
-
-    function ponderedLabel() {
-        if (_thinkDurationMs < 5000) return "Pondered briefly";
-        return "Pondered for " + Math.round(_thinkDurationMs / 1000) + " seconds";
+    function ponderedLabel(entry) {
+        var ms = entry ? (entry.ms || 0) : 0;
+        if (ms < 5000) return "Pondered briefly";
+        return "Pondered for " + Math.round(ms / 1000) + " seconds";
     }
 
     // ── Segmented body rendering + batch reveal ───────────────────
@@ -314,50 +386,67 @@ Rectangle {
         return parts;
     }
 
-    // fadeFrom: offset where the newest batch began (-1 = settled).
-    // Streaming renders at most shownText (advanced ≤flushChars/tick).
+    // fadeFrom: offset where the newest batch began (-1 = settled),
+    // relative to the LIVE flow entry. Streaming renders at most
+    // shownText/shownThinking (advanced ≤flushChars/tick).
     function flushBatches(contentFrom, thinkFrom) {
         var streaming = msgState === "streaming";
-        var renderText = streaming
-            ? content.substring(0, shownText.length) : content;
-        if (isUser || renderText.length === 0) {
-            segments = [];
-        } else if (streaming && contentFrom >= 0 && contentFrom < renderText.length) {
-            var segs = Markdown.splitCodeSegments(renderText);
-            for (var i = 0; i < segs.length; i++) {
-                if (segs[i].type !== "text") continue;
-                var rel = -1;
-                if (i === segs.length - 1 && contentFrom >= 0) {
-                    rel = contentFrom - (renderText.length - segs[i].text.length);
-                    if (rel < 0) rel = 0;
-                    if (rel >= segs[i].text.length) rel = -1;
+        var live = (flowRender && flowRender.length > 0)
+            ? flowRender[flowRender.length - 1] : null;
+        segments = [];
+        renderedThinkingHtml = "";
+        if (isUser || !live) return;
+        if (live.t === "x") {
+            var end = streaming
+                ? Math.min(shownText.length, content.length) : live.b;
+            if (end <= live.a) return;
+            var renderText = content.substring(live.a, end);
+            if (streaming && contentFrom >= 0
+                    && contentFrom - live.a < renderText.length) {
+                var rel = contentFrom - live.a;
+                if (rel < 0) rel = 0;
+                var segs = Markdown.splitCodeSegments(renderText);
+                for (var i = 0; i < segs.length; i++) {
+                    if (segs[i].type !== "text") continue;
+                    var r = -1;
+                    if (i === segs.length - 1) {
+                        r = rel - (renderText.length - segs[i].text.length);
+                        if (r < 0) r = 0;
+                        if (r >= segs[i].text.length) r = -1;
+                    }
+                    if (r >= 0) {
+                        var parts = _fadeSplit(_fadeColor, segs[i].text, r);
+                        _fadePrefix = parts.prefix;
+                        _fadeTail = parts.tail;
+                        _fadeSuffix = parts.suffix;
+                        segs[i].html = parts.html;
+                    } else {
+                        segs[i].html = Markdown.markdownToHtml(
+                            segs[i].text, mdColors, _highlight);
+                    }
                 }
-                if (rel >= 0) {
-                    var parts = _fadeSplit(_fadeColor, segs[i].text, rel);
-                    _fadePrefix = parts.prefix;
-                    _fadeTail = parts.tail;
-                    _fadeSuffix = parts.suffix;
-                    segs[i].html = parts.html;
-                } else {
-                    segs[i].html = Markdown.markdownToHtml(
-                        segs[i].text, mdColors, _highlight);
-                }
+                segments = segs;
+            } else {
+                segments = buildSegments(renderText);
             }
-            segments = segs;
-        } else {
-            segments = buildSegments(renderText);
-        }
-        if (shownThinking.length === 0) {
-            renderedThinkingHtml = "";
-        } else if (streaming && thinkFrom >= 0 && thinkFrom < shownThinking.length) {
-            var tp = _fadeSplit(_thinkFadeColor, shownThinking, thinkFrom);
-            _thinkFadePrefix = tp.prefix;
-            _thinkFadeTail = tp.tail;
-            _thinkFadeSuffix = tp.suffix;
-            renderedThinkingHtml = tp.html;
-        } else {
-            renderedThinkingHtml = Markdown.markdownToHtml(
-                shownThinking, mdColors, _highlight);
+        } else if (live.t === "k") {
+            var endT = streaming
+                ? Math.min(shownThinking.length, thinking.length) : live.b;
+            if (endT <= live.a) return;
+            var renderThink = thinking.substring(live.a, endT);
+            if (streaming && thinkFrom >= 0
+                    && thinkFrom - live.a < renderThink.length) {
+                var relT = thinkFrom - live.a;
+                if (relT < 0) relT = 0;
+                var tp = _fadeSplit(_thinkFadeColor, renderThink, relT);
+                _thinkFadePrefix = tp.prefix;
+                _thinkFadeTail = tp.tail;
+                _thinkFadeSuffix = tp.suffix;
+                renderedThinkingHtml = tp.html;
+            } else {
+                renderedThinkingHtml = Markdown.markdownToHtml(
+                    renderThink, mdColors, _highlight);
+            }
         }
     }
 
@@ -375,14 +464,14 @@ Rectangle {
     function revealTick() {
         if (isUser || msgState !== "streaming") return;
         if (shownText.length >= content.length
-                && shownThinking.length >= thinkTail.length) return;
+                && shownThinking.length >= thinking.length) return;
         var prevC = shownText.length;
         var prevT = shownThinking.length;
         // render cap: ≤flushChars new chars enter the layout per tick
         shownText = content.substring(
             0, Math.min(content.length, shownText.length + flushChars));
-        shownThinking = thinkTail.substring(
-            0, Math.min(thinkTail.length, shownThinking.length + flushChars));
+        shownThinking = thinking.substring(
+            0, Math.min(thinking.length, shownThinking.length + flushChars));
         flushBatches(prevC, prevT);
         _fadeStartMs = Date.now();
         _thinkFadeStartMs = Date.now();
@@ -427,45 +516,29 @@ Rectangle {
     }
 
     onMsgStateChanged: {
-        var streaming = msgState === "streaming";
-        if (streaming) {
-            _thinkStartMs = 0;
-            _thinkDurationMs = 0;
+        if (msgState === "streaming") {
             shownText = "";
             shownThinking = "";
-            if (content.length === 0) thinkingExpanded = true;
         } else {
-            if (_thinkStartMs > 0 && _thinkDurationMs === 0)
-                _thinkDurationMs = Date.now() - _thinkStartMs;
             shownText = content;
-            shownThinking = thinkTail;
-            thinkingExpanded = false;   // done → collapsed "Pondered …"
+            shownThinking = thinking;
         }
         fadeTimer.stop();
         flushBatches(-1, -1);
     }
     onContentChanged: {
-        if (content.length > 0 && _thinkStartMs > 0 && _thinkDurationMs === 0) {
-            _thinkDurationMs = Date.now() - _thinkStartMs;
-            thinkingExpanded = false;   // thinking done → hide it
-        }
         if (msgState !== "streaming") flushBatches(-1, -1);
     }
     onThinkingChanged: {
-        if (thinking.length > 0 && _thinkStartMs === 0) _thinkStartMs = Date.now();
-        if (msgState !== "streaming") {
-            shownThinking = thinkTail;
-            flushBatches(-1, -1);
-        }
+        if (msgState !== "streaming") flushBatches(-1, -1);
     }
     onMdColorsChanged: {   // live theme switch → recolor completed bubbles
+        _segCache = ({ keys: [], htmls: [] });   // html bakes theme colors
         shownText = content;
-        shownThinking = thinkTail;
+        shownThinking = thinking;
         flushBatches(-1, -1);
     }
     Component.onCompleted: {
-        if (msgState === "streaming") thinkingExpanded = true;
-        else { shownText = content; shownThinking = thinkTail; }
         flushBatches(-1, -1);
         _maybePlayEntrance();
     }
@@ -554,21 +627,48 @@ Rectangle {
             }
         }
 
-        // Thinking box (also hosts tool chips alone when there's no
-        // thinking text).
-        Loader {
-            active: thinking.length > 0 || bubble.toolLogArr.length > 0
-            Layout.fillWidth: true
-            sourceComponent: thinkingBox
-        }
+        // Chronological flow: pondering boxes, text segments and
+        // tool chips in the order the model produced them. Count-based
+        // Repeater — delegates are reused across ticks.
+        Repeater {
+            model: bubble.flowRender ? bubble.flowRender.length : 0
 
+            delegate: Loader {
+                id: flowLoader
+                required property int index
+                readonly property var entry:
+                    (bubble.flowRender && index < bubble.flowRender.length)
+                    ? bubble.flowRender[index] : null
+                readonly property var chipEntry:
+                    entry && entry.t === "c"
+                        && entry.i < bubble.toolLogArr.length
+                    ? bubble.toolLogArr[entry.i] : null
+                Layout.fillWidth: true
+                sourceComponent:
+                    !entry ? textEntryComp
+                    : entry.t === "k" ? ponderBoxComp
+                    : entry.t === "c" ? toolChipComp
+                    : textEntryComp
+                onLoaded: {
+                    if (entry && entry.t === "c") {
+                        flowLoader.item.index = Qt.binding(
+                            function () { return flowLoader.entry.i; });
+                        flowLoader.item.entry = Qt.binding(
+                            function () { return flowLoader.chipEntry; });
+                    } else {
+                        flowLoader.item.entry = Qt.binding(
+                            function () { return flowLoader.entry; });
+                    }
+                }
+            }
+        }
 
         // Streaming indicator before first content: a plain status
         // label breathing toward the accent — same 750 ms cadence as
         // the tool chip's in-flight pulse.
         Text {
             id: promptRow
-            visible: isStreaming && content.length === 0 && thinking.length === 0
+            visible: isStreaming && bubble.flowRender.length === 0
             text: "Processing prompt"
             font.pixelSize: 11
 
@@ -596,25 +696,6 @@ Rectangle {
                     base.g + (accent.g - base.g) * k,
                     base.b + (accent.b - base.b) * k,
                     1);
-            }
-        }
-
-        // Count-based Repeater — delegates are reused across ticks,
-        // each reading its segment by index.
-        Repeater {
-            model: bubble.segments ? bubble.segments.length : 0
-
-            delegate: Loader {
-                id: segLoader
-                required property int index
-                readonly property var seg:
-                    (bubble.segments && index < bubble.segments.length)
-                    ? bubble.segments[index] : null
-                Layout.fillWidth: true
-                sourceComponent:
-                    seg && seg.type === "code" ? codeSegComp : textSegComp
-                onLoaded: item.seg = Qt.binding(
-                    function () { return segLoader.seg; })
             }
         }
 
@@ -894,38 +975,45 @@ Rectangle {
         }
     }
 
+
+    // One pondering box per think entry: collapsible header chip
+    // (live = "Pondering…", closed = stamped duration), capped
+    // auto-scrolling content, and the tool chips that were issued
+    // straight out of this thinking phase.
     Component {
-        id: thinkingBox
+        id: ponderBoxComp
         ColumnLayout {
-            id: thinkPane
+            id: ponderPane
+            property var entry: null
+            readonly property bool live: entry ? entry.live : false
+            readonly property bool busy: entry ? entry.busy : false
+            readonly property int srcIdx: entry && entry.srcIdx !== undefined
+                ? entry.srcIdx : -1
+            readonly property bool expanded:
+                bubble.isBoxOpen(srcIdx, live || busy)
             spacing: 4
-            // Thinking header chip: hovering tints it with the accent
-            // color and crossfades the bulb into an expand arrow; the
-            // whole chip is the toggle target. Hidden when the model
-            // produced no thinking — the box then hosts only the
-            // tool chips below.
+
             Rectangle {
-                id: thinkHeader
-                visible: thinking.length > 0
+                id: ponderHeader
                 Layout.fillWidth: false
-                implicitWidth: headerRow.implicitWidth + 16
-                implicitHeight: headerRow.implicitHeight + 8
+                implicitWidth: pHeaderRow.implicitWidth + 16
+                implicitHeight: pHeaderRow.implicitHeight + 8
                 radius: 8
-                color: thinkHeaderHover.hovered
+                color: pHeaderHover.hovered
                     ? Theme.withAlpha(Theme.primary, 0.14) : "transparent"
                 Behavior on color { ColorAnimation { duration: 220 } }
 
                 HoverHandler {
-                    id: thinkHeaderHover
+                    id: pHeaderHover
                     cursorShape: Qt.PointingHandCursor
                 }
                 TapHandler {
-                    onTapped: bubble.thinkingExpanded =
-                        !bubble.thinkingExpanded
+                    onTapped: bubble.toggleBox(ponderPane.srcIdx,
+                                               ponderPane.live)
                 }
 
                 RowLayout {
-                    id: headerRow
+                    id: pHeaderRow
                     anchors.centerIn: parent
                     spacing: 6
 
@@ -936,7 +1024,7 @@ Rectangle {
                             name: "emoji_objects"
                             size: 16
                             color: Theme.surfaceVariantText
-                            opacity: thinkHeaderHover.hovered ? 0 : 1
+                            opacity: pHeaderHover.hovered ? 0 : 1
                             Behavior on opacity {
                                 NumberAnimation { duration: 220 }
                             }
@@ -946,7 +1034,7 @@ Rectangle {
                             name: "expand_more"
                             size: 16
                             color: Theme.primary
-                            opacity: thinkHeaderHover.hovered ? 1 : 0
+                            opacity: pHeaderHover.hovered ? 1 : 0
                             Behavior on opacity {
                                 NumberAnimation { duration: 220 }
                             }
@@ -954,10 +1042,12 @@ Rectangle {
                     }
 
                     Text {
-                        text: !bubble.thinkingDone ? "Pondering..."
-                            : (bubble.thinkingExpanded ? "Hide thinking"
-                                                       : bubble.ponderedLabel())
-                        color: thinkHeaderHover.hovered
+                        text: ponderPane.live || ponderPane.busy
+                            ? "Pondering..."
+                            : (ponderPane.expanded
+                               ? "Hide thinking"
+                               : bubble.ponderedLabel(ponderPane.entry))
+                        color: pHeaderHover.hovered
                             ? Theme.primary : Theme.surfaceVariantText
                         font.pixelSize: 11
                         Behavior on color { ColorAnimation { duration: 220 } }
@@ -965,28 +1055,27 @@ Rectangle {
                 }
             }
 
-            // Thinking content: 220px cap + smoothed height; auto-scroll
-            // pinned to the bottom while streaming, free after. Column
-            // so tool chips render inside the collapsible area.
+            // Box content: 220px cap + smoothed height; auto-scroll
+            // pinned to the bottom while this box is the live one,
+            // free after. Column so merged tool chips render inside
+            // the collapsible area.
             Flickable {
-                id: thinkFlick
-                // Hidden when collapsed — unless there's no thinking
-                // text and the box hosts only the tool chips.
-                visible: bubble.thinkingExpanded || thinking.length === 0
+                id: pFlick
+                visible: ponderPane.expanded
                 Layout.fillWidth: true
-                Layout.preferredHeight: smoothH
+                Layout.preferredHeight: pSmoothH
                 readonly property int maxH: 220
-                property real smoothH: Math.min(contentHeight, maxH)
-                Behavior on smoothH {
+                property real pSmoothH: Math.min(contentHeight, maxH)
+                Behavior on pSmoothH {
                     NumberAnimation { duration: 150; easing.type: Easing.OutQuad }
                 }
-                contentHeight: thinkContent.implicitHeight
+                contentHeight: pContent.implicitHeight
                 clip: true
 
                 property bool pinned: true
 
                 function chase() {
-                    if (!pinned || !bubble.isStreaming) return;
+                    if (!pinned || !ponderPane.live) return;
                     if (height <= 0) return;
                     // Scroll ONLY on real overflow of the capped box.
                     // While the box is still growing, growth itself
@@ -1002,13 +1091,13 @@ Rectangle {
                         return;
                     }
                     if (Math.abs(contentY - target) < 0.5) return;
-                    thinkChaseAnim.to = target;
-                    thinkChaseAnim.restart();
+                    pChaseAnim.to = target;
+                    pChaseAnim.restart();
                 }
 
                 function unpin() {
                     pinned = false;
-                    thinkChaseAnim.stop();
+                    pChaseAnim.stop();
                 }
 
                 onContentHeightChanged: chase()
@@ -1018,15 +1107,15 @@ Rectangle {
                 onContentYChanged: {
                     // the chase only ever increases contentY; any
                     // decrease is the user scrolling up
-                    if (contentY < thinkFlick._lastY - 2) unpin();
-                    thinkFlick._lastY = contentY;
+                    if (contentY < pFlick._lastY - 2) unpin();
+                    pFlick._lastY = contentY;
                     if (atYEnd) pinned = true;
                 }
                 property real _lastY: 0
 
                 NumberAnimation {
-                    id: thinkChaseAnim
-                    target: thinkFlick
+                    id: pChaseAnim
+                    target: pFlick
                     property: "contentY"
                     // Linear conveyor, same rationale as the message
                     // list follow: eased restarts spike per flush.
@@ -1036,77 +1125,29 @@ Rectangle {
 
                 WheelHandler {
                     onWheel: (event) => {
-                        thinkFlick.unpin();
+                        pFlick.unpin();
                         event.accepted = false;
                     }
                 }
 
-                // Box content: the pondering flow as interleaved
-                // segments — thinking text with the tool chips placed
-                // at the chronological point each call was issued:
-                // [text] [chip] [text] [chip] [live tail]. Everything
-                // lives inside the collapsible area, so it expands and
-                // collapses together with the box.
                 Column {
-                    id: thinkContent
-                    width: thinkFlick.width
+                    id: pContent
+                    width: pFlick.width
                     spacing: 8
 
-                    // Count-based model: delegates are reused while
-                    // the count is stable; each reads its segment by
-                    // index (same pattern as the body segments).
-                    Repeater {
-                        model: bubble.thinkSegments.length
-
-                        delegate: Loader {
-                            id: segLoader
-                            required property int index
-                            readonly property var seg:
-                                (bubble.thinkSegments
-                                 && index < bubble.thinkSegments.length)
-                                ? bubble.thinkSegments[index] : null
-                            width: thinkContent.width
-                            sourceComponent:
-                                seg && seg.type === "tool"
-                                ? toolChipComp : thinkTextSegComp
-                            onLoaded: {
-                                if (seg && seg.type === "tool") {
-                                    item.index = Qt.binding(function () {
-                                        return segLoader.seg ? segLoader.seg.idx : 0;
-                                    });
-                                    item.entry = Qt.binding(function () {
-                                        var s = segLoader.seg;
-                                        return s ? (bubble.toolLogArr[s.idx] || null)
-                                                 : null;
-                                    });
-                                } else {
-                                    // Text segment: hand the segment
-                                    // record to the TextArea so it can
-                                    // switch between the live fade html
-                                    // and the static markdown render.
-                                    item.seg = Qt.binding(function () {
-                                        return segLoader.seg;
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Component {
-                    id: thinkTextSegComp
+                    // This box's thinking text: the live box streams
+                    // through the fade machinery; closed boxes render
+                    // cached static markdown.
                     TextArea {
-                        property var seg: null
-                        width: thinkContent.width
+                        width: pContent.width
                         readOnly: true
                         textFormat: TextEdit.RichText
                         wrapMode: TextEdit.Wrap
-                        // The live tail streams through the fade/
-                        // reveal machinery; frozen heads render static
-                        // markdown (their round is complete).
-                        text: seg && seg.live
+                        text: ponderPane.live
                             ? bubble.renderedThinkingHtml
-                            : bubble.staticThinkHtml(seg ? seg.text : "")
+                            : bubble.entryThinkHtml(
+                                  ponderPane.entry ? ponderPane.entry.a : 0,
+                                  ponderPane.entry ? ponderPane.entry.b : 0)
                         color: Theme.surfaceTextMedium
                         font.pixelSize: 12
                         background: null
@@ -1115,211 +1156,31 @@ Rectangle {
                         topPadding: 0
                         bottomPadding: 0
                     }
-                }
-            }
 
-            // One tool chip + its collapsible detail block. The label
-            // carries the tool name in parentheses ("Calling Tool
-            // (web_search)"); the detail holds the pretty-printed
-            // request/response. index/entry are bound by the
-            // instantiating Loader so the chip updates live as the
-            // entry mutates.
-            Component {
-                id: toolChipComp
+                    // Tool chips issued straight out of this thinking
+                    // phase — rendered inside the box.
+                    Repeater {
+                        model: ponderPane.entry
+                            ? ponderPane.entry.chips.length : 0
 
-                ColumnLayout {
-                    id: toolEntry
-                    property int index: 0
-                    property var entry: null
-                    readonly property bool expanded: bubble.isToolExpanded(index)
-                        readonly property bool hasDetail:
-                            entry && entry.detail && entry.detail.length > 0
-                        // Sub-second calls collapse to "in less than a
-                        // second" so the chip never shows 0 seconds.
-                        readonly property string chipLabel: {
-                            var e = toolEntry.entry;
-                            var name = e && e.name ? " (" + e.name + ")" : "";
-                            if (!e || e.state === "running")
-                                return "Calling Tool" + name;
-                            var ms = Math.max(0,
-                                              (e.endMs || 0) - (e.startMs || 0));
-                            if (ms < 1000)
-                                return "Tool called in less than a second"
-                                    + name;
-                            return "Tool called for "
-                                + Math.round(ms / 1000) + " seconds" + name;
-                        }
-
-                        Layout.fillWidth: true
-                        spacing: 2
-
-                        // Tool chip: generic label (real name is in the
-                        // detail); hover crossfades the icon to a
-                        // chevron; accent "breathing" while in flight.
-                        Rectangle {
-                            id: toolChip
-                            Layout.fillWidth: false
-                            implicitWidth: toolChipRow.implicitWidth + 16
-                            implicitHeight: toolChipRow.implicitHeight + 8
-                            radius: 8
-                            color: chipHover.hovered
-                                ? Theme.withAlpha(Theme.primary, 0.14) : "transparent"
-                            Behavior on color { ColorAnimation { duration: 220 } }
-
-                            // 0 → 1 → 0, only while the call is in
-                            // flight. Lerps text/icon color toward
-                            // the accent for the "breathing" effect.
-                            property real breathe: 0
-                            SequentialAnimation on breathe {
-                                running: toolEntry.entry
-                                    && toolEntry.entry.state === "running"
-                                loops: Animation.Infinite
-                                NumberAnimation {
-                                    from: 0; to: 1; duration: 750
-                                    easing.type: Easing.InOutSine
-                                }
-                                NumberAnimation {
-                                    from: 1; to: 0; duration: 750
-                                    easing.type: Easing.InOutSine
-                                }
-                            }
-
-                            function breatheColor(base, accent) {
-                                var k = toolChip.breathe * 0.55;
-                                return Qt.rgba(
-                                    base.r + (accent.r - base.r) * k,
-                                    base.g + (accent.g - base.g) * k,
-                                    base.b + (accent.b - base.b) * k,
-                                    1
-                                );
-                            }
-
-                            // Icon follows the text color and breathes
-                            // toward the accent while in flight.
-                            function iconColor() {
-                                var base = Theme.surfaceVariantText;
-                                if (chipHover.hovered) return Theme.primary;
-                                if (!toolEntry.entry
-                                    || toolEntry.entry.state !== "running")
-                                    return base;
-                                return toolChip.breatheColor(base, Theme.primary);
-                            }
-
-                            HoverHandler { id: chipHover; cursorShape: Qt.PointingHandCursor }
-                            TapHandler {
-                                onTapped: if (toolEntry.hasDetail)
-                                    bubble.toggleToolExpand(toolEntry.index)
-                            }
-
-                            RowLayout {
-                                id: toolChipRow
-                                anchors.centerIn: parent
-                                spacing: 6
-
-                                // Left slot: handyman glyph crossfading
-                                // to a chevron on hover.
-                                Item {
-                                    width: 16; height: 16
-                                    DankIcon {
-                                        anchors.centerIn: parent
-                                        name: "handyman"
-                                        size: 14
-                                        color: toolChip.iconColor()
-                                        opacity: chipHover.hovered ? 0 : 1
-                                        Behavior on opacity {
-                                            NumberAnimation { duration: 220 }
-                                        }
-                                    }
-                                    DankIcon {
-                                        anchors.centerIn: parent
-                                        name: "expand_more"
-                                        size: 14
-                                        color: toolChip.iconColor()
-                                        opacity: chipHover.hovered ? 1 : 0
-                                        rotation: toolEntry.expanded ? 180 : 0
-                                        Behavior on opacity {
-                                            NumberAnimation { duration: 220 }
-                                        }
-                                        Behavior on rotation {
-                                            RotationAnimation {
-                                                duration: 200
-                                                easing.type: Easing.OutCubic
-                                            }
-                                        }
-                                    }
-                                }
-
-                                Text {
-                                    text: toolEntry.chipLabel
-                                    color: {
-                                        if (chipHover.hovered) return Theme.primary;
-                                        return toolChip.breathe
-                                            ? toolChip.breatheColor(
-                                                  Theme.surfaceVariantText,
-                                                  Theme.primary)
-                                            : Theme.surfaceVariantText;
-                                    }
-                                    font.pixelSize: 11
-                                    font.family: Theme.monoFontFamily
-                                    elide: Text.ElideRight
-                                }
-                            }
-                        }
-
-                        // Collapsible detail: real tool name + pretty-
-                        // printed response. Flickable caps the height;
-                        // body is NoWrap to keep the JSON indent intact.
-                        ColumnLayout {
-                            id: toolDetail
-                            visible: toolEntry.expanded && toolEntry.hasDetail
-                            Layout.fillWidth: true
-                            Layout.topMargin: 2
-                            spacing: 4
-
-                            Text {
-                                Layout.fillWidth: true
-                                text: toolEntry.entry ? toolEntry.entry.name : ""
-                                color: Theme.surfaceVariantText
-                                font.pixelSize: 12
-                                font.family: Theme.monoFontFamily
-                                font.bold: true
-                                elide: Text.ElideRight
-                            }
-
-                            Flickable {
-                                id: toolFlick
-                                Layout.fillWidth: true
-                                property real smoothH:
-                                    Math.min(toolDetailBody.contentHeight, 260)
-                                Behavior on smoothH {
-                                    NumberAnimation { duration: 150; easing.type: Easing.OutQuad }
-                                }
-                                Layout.preferredHeight: smoothH
-                                contentHeight: toolDetailBody.contentHeight
-                                contentWidth: toolDetailBody.contentWidth
-                                clip: true
-                                boundsBehavior: Flickable.StopAtBounds
-
-                                TextArea {
-                                    id: toolDetailBody
-                                    width: Math.max(toolFlick.width,
-                                                     toolDetailBody.contentWidth)
-                                    readOnly: true
-                                    textFormat: TextEdit.PlainText
-                                    wrapMode: TextEdit.NoWrap
-                                    text: toolEntry.entry
-                                        ? bubble.formatToolDetail(toolEntry.entry.detail)
-                                        : ""
-                                    color: Theme.surfaceTextMedium
-                                    font.pixelSize: 12
-                                    font.family: Theme.monoFontFamily
-                                    background: null
-                                    leftPadding: 8
-                                    rightPadding: 8
-                                    topPadding: 8
-                                    bottomPadding: 8
-                                    selectByMouse: true
-                                }
+                        delegate: Loader {
+                            id: boxChipLoader
+                            required property int index
+                            readonly property int chipIdx:
+                                (ponderPane.entry
+                                 && index < ponderPane.entry.chips.length)
+                                ? ponderPane.entry.chips[index] : 0
+                            readonly property var chipEntry:
+                                (chipIdx >= 0
+                                 && chipIdx < bubble.toolLogArr.length)
+                                ? bubble.toolLogArr[chipIdx] : null
+                            width: pContent.width
+                            sourceComponent: toolChipComp
+                            onLoaded: {
+                                boxChipLoader.item.index = Qt.binding(
+                                    function () { return boxChipLoader.chipIdx; });
+                                boxChipLoader.item.entry = Qt.binding(
+                                    function () { return boxChipLoader.chipEntry; });
                             }
                         }
                     }
@@ -1327,3 +1188,240 @@ Rectangle {
             }
         }
     }
+
+    Component {
+        id: toolChipComp
+
+        ColumnLayout {
+            id: toolEntry
+            property int index: 0
+            property var entry: null
+            readonly property bool expanded: bubble.isToolExpanded(index)
+                readonly property bool hasDetail:
+                    entry && entry.detail && entry.detail.length > 0
+                // Sub-second calls collapse to "in less than a
+                // second" so the chip never shows 0 seconds.
+                readonly property string chipLabel: {
+                    var e = toolEntry.entry;
+                    var name = e && e.name ? " (" + e.name + ")" : "";
+                    if (!e || e.state === "running")
+                        return "Calling Tool" + name;
+                    var ms = Math.max(0,
+                                      (e.endMs || 0) - (e.startMs || 0));
+                    if (ms < 1000)
+                        return "Tool called in less than a second"
+                            + name;
+                    return "Tool called for "
+                        + Math.round(ms / 1000) + " seconds" + name;
+                }
+
+                Layout.fillWidth: true
+                spacing: 2
+
+                // Tool chip: generic label (real name is in the
+                // detail); hover crossfades the icon to a
+                // chevron; accent "breathing" while in flight.
+                Rectangle {
+                    id: toolChip
+                    Layout.fillWidth: false
+                    implicitWidth: toolChipRow.implicitWidth + 16
+                    implicitHeight: toolChipRow.implicitHeight + 8
+                    radius: 8
+                    color: chipHover.hovered
+                        ? Theme.withAlpha(Theme.primary, 0.14) : "transparent"
+                    Behavior on color { ColorAnimation { duration: 220 } }
+
+                    // 0 → 1 → 0, only while the call is in
+                    // flight. Lerps text/icon color toward
+                    // the accent for the "breathing" effect.
+                    property real breathe: 0
+                    SequentialAnimation on breathe {
+                        running: toolEntry.entry
+                            && toolEntry.entry.state === "running"
+                        loops: Animation.Infinite
+                        NumberAnimation {
+                            from: 0; to: 1; duration: 750
+                            easing.type: Easing.InOutSine
+                        }
+                        NumberAnimation {
+                            from: 1; to: 0; duration: 750
+                            easing.type: Easing.InOutSine
+                        }
+                    }
+
+                    function breatheColor(base, accent) {
+                        var k = toolChip.breathe * 0.55;
+                        return Qt.rgba(
+                            base.r + (accent.r - base.r) * k,
+                            base.g + (accent.g - base.g) * k,
+                            base.b + (accent.b - base.b) * k,
+                            1
+                        );
+                    }
+
+                    // Icon follows the text color and breathes
+                    // toward the accent while in flight.
+                    function iconColor() {
+                        var base = Theme.surfaceVariantText;
+                        if (chipHover.hovered) return Theme.primary;
+                        if (!toolEntry.entry
+                            || toolEntry.entry.state !== "running")
+                            return base;
+                        return toolChip.breatheColor(base, Theme.primary);
+                    }
+
+                    HoverHandler { id: chipHover; cursorShape: Qt.PointingHandCursor }
+                    TapHandler {
+                        onTapped: if (toolEntry.hasDetail)
+                            bubble.toggleToolExpand(toolEntry.index)
+                    }
+
+                    RowLayout {
+                        id: toolChipRow
+                        anchors.centerIn: parent
+                        spacing: 6
+
+                        // Left slot: handyman glyph crossfading
+                        // to a chevron on hover.
+                        Item {
+                            width: 16; height: 16
+                            DankIcon {
+                                anchors.centerIn: parent
+                                name: "handyman"
+                                size: 14
+                                color: toolChip.iconColor()
+                                opacity: chipHover.hovered ? 0 : 1
+                                Behavior on opacity {
+                                    NumberAnimation { duration: 220 }
+                                }
+                            }
+                            DankIcon {
+                                anchors.centerIn: parent
+                                name: "expand_more"
+                                size: 14
+                                color: toolChip.iconColor()
+                                opacity: chipHover.hovered ? 1 : 0
+                                rotation: toolEntry.expanded ? 180 : 0
+                                Behavior on opacity {
+                                    NumberAnimation { duration: 220 }
+                                }
+                                Behavior on rotation {
+                                    RotationAnimation {
+                                        duration: 200
+                                        easing.type: Easing.OutCubic
+                                    }
+                                }
+                            }
+                        }
+
+                        Text {
+                            text: toolEntry.chipLabel
+                            color: {
+                                if (chipHover.hovered) return Theme.primary;
+                                return toolChip.breathe
+                                    ? toolChip.breatheColor(
+                                          Theme.surfaceVariantText,
+                                          Theme.primary)
+                                    : Theme.surfaceVariantText;
+                            }
+                            font.pixelSize: 11
+                            font.family: Theme.monoFontFamily
+                            elide: Text.ElideRight
+                        }
+                    }
+                }
+
+                // Collapsible detail: real tool name + pretty-
+                // printed response. Flickable caps the height;
+                // body is NoWrap to keep the JSON indent intact.
+                ColumnLayout {
+                    id: toolDetail
+                    visible: toolEntry.expanded && toolEntry.hasDetail
+                    Layout.fillWidth: true
+                    Layout.topMargin: 2
+                    spacing: 4
+
+                    Text {
+                        Layout.fillWidth: true
+                        text: toolEntry.entry ? toolEntry.entry.name : ""
+                        color: Theme.surfaceVariantText
+                        font.pixelSize: 12
+                        font.family: Theme.monoFontFamily
+                        font.bold: true
+                        elide: Text.ElideRight
+                    }
+
+                    Flickable {
+                        id: toolFlick
+                        Layout.fillWidth: true
+                        property real smoothH:
+                            Math.min(toolDetailBody.contentHeight, 260)
+                        Behavior on smoothH {
+                            NumberAnimation { duration: 150; easing.type: Easing.OutQuad }
+                        }
+                        Layout.preferredHeight: smoothH
+                        contentHeight: toolDetailBody.contentHeight
+                        contentWidth: toolDetailBody.contentWidth
+                        clip: true
+                        boundsBehavior: Flickable.StopAtBounds
+
+                        TextArea {
+                            id: toolDetailBody
+                            width: Math.max(toolFlick.width,
+                                             toolDetailBody.contentWidth)
+                            readOnly: true
+                            textFormat: TextEdit.PlainText
+                            wrapMode: TextEdit.NoWrap
+                            text: toolEntry.entry
+                                ? bubble.formatToolDetail(toolEntry.entry.detail)
+                                : ""
+                            color: Theme.surfaceTextMedium
+                            font.pixelSize: 12
+                            font.family: Theme.monoFontFamily
+                            background: null
+                            leftPadding: 8
+                            rightPadding: 8
+                            topPadding: 8
+                            bottomPadding: 8
+                            selectByMouse: true
+                        }
+                    }
+                }
+            }
+    }
+
+    // One text flow entry: closed entries render their range from
+    // the cached segment split; the live entry renders the segment
+    // list the fade machinery maintains (bubble.segments).
+    Component {
+        id: textEntryComp
+        ColumnLayout {
+            id: textEntry
+            property var entry: null
+            readonly property bool live: entry ? entry.live : false
+            readonly property var segs: live
+                ? bubble.segments
+                : bubble.entrySegs(entry ? entry.a : 0,
+                                   entry ? entry.b : 0)
+            spacing: 0
+            Layout.fillWidth: true
+
+            Repeater {
+                model: textEntry.segs ? textEntry.segs.length : 0
+
+                delegate: Loader {
+                    id: segLoader
+                    required property int index
+                    readonly property var seg:
+                        (textEntry.segs && index < textEntry.segs.length)
+                        ? textEntry.segs[index] : null
+                    Layout.fillWidth: true
+                    sourceComponent:
+                        seg && seg.type === "code" ? codeSegComp : textSegComp
+                    onLoaded: item.seg = Qt.binding(
+                        function () { return segLoader.seg; })
+                }
+            }
+        }
+    }
+}

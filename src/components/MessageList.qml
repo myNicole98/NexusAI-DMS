@@ -169,6 +169,7 @@ ListView {
             content: model.content
             thinking: model.thinking
             toolLog: model.toolLog
+            flow: model.flow
             attachments: model.attachments
             modelUsed: model.modelUsed
             modelProviderId: model.modelProviderId
