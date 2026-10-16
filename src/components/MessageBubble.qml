@@ -1118,11 +1118,12 @@ Rectangle {
                 }
             }
 
-            // One tool chip + its collapsible detail block. Generic
-            // label ("Calling Tool" / "Tool called for N seconds");
-            // the actual tool name lives in the detail. index/entry are
-            // bound by the instantiating Loader so the chip updates
-            // live as the entry mutates.
+            // One tool chip + its collapsible detail block. The label
+            // carries the tool name in parentheses ("Calling Tool
+            // (web_search)"); the detail holds the pretty-printed
+            // request/response. index/entry are bound by the
+            // instantiating Loader so the chip updates live as the
+            // entry mutates.
             Component {
                 id: toolChipComp
 
@@ -1133,15 +1134,20 @@ Rectangle {
                     readonly property bool expanded: bubble.isToolExpanded(index)
                         readonly property bool hasDetail:
                             entry && entry.detail && entry.detail.length > 0
-                        // Sub-second calls collapse to "(less than a
-                        // second)" so the chip never shows 0 seconds.
+                        // Sub-second calls collapse to "in less than a
+                        // second" so the chip never shows 0 seconds.
                         readonly property string chipLabel: {
                             var e = toolEntry.entry;
-                            if (!e || e.state === "running") return "Calling Tool";
+                            var name = e && e.name ? " (" + e.name + ")" : "";
+                            if (!e || e.state === "running")
+                                return "Calling Tool" + name;
                             var ms = Math.max(0,
                                               (e.endMs || 0) - (e.startMs || 0));
-                            if (ms < 1000) return "Tool called (less than a second)";
-                            return "Tool called for " + Math.round(ms / 1000) + " seconds";
+                            if (ms < 1000)
+                                return "Tool called in less than a second"
+                                    + name;
+                            return "Tool called for "
+                                + Math.round(ms / 1000) + " seconds" + name;
                         }
 
                         Layout.fillWidth: true
