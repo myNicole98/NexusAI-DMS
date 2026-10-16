@@ -1228,6 +1228,13 @@ Item {
                 timestamp: m.timestamp || 0
             });
         }
+        for (var r = 0; r < rec.messages.length; r++) {
+            var mid = /^m(\d+)$/.exec(String(rec.messages[r].id || ""));
+            if (mid) {
+                var n = parseInt(mid[1], 10);
+                if (n > _idCounter) _idCounter = n;
+            }
+        }
     }
 
     // Snapshot the live conversation into the store (allocating its id
@@ -1606,16 +1613,60 @@ Item {
 
     // ── Streaming wiring ──────────────────────────────────────────
 
+    property string _mirrorStreamId: ""
+    property string _pendStreamId: ""
+    property string _streamContent: ""
+    property string _streamThinking: ""
+
+    function _clearStreamBuffer() {
+        _mirrorStreamId = "";
+        _pendStreamId = "";
+        _streamContent = "";
+        _streamThinking = "";
+    }
+
+    function _flushStreamBuffer() {
+        if (_pendStreamId.length === 0) return;   // nothing new to write
+        _pendStreamId = "";
+        var i = _indexOfId(_mirrorStreamId);
+        if (i < 0) {
+            _clearStreamBuffer();
+            return;
+        }
+        if (_streamContent.length > 0)
+            messagesModel.setProperty(i, "content", _streamContent);
+        if (_streamThinking.length > 0)
+            messagesModel.setProperty(i, "thinking", _streamThinking);
+    }
+
+    Timer {
+        id: streamFlushTimer
+        interval: 50
+        onTriggered: root._flushStreamBuffer()
+    }
+
     function _appendContent(id, delta) {
-        var i = _indexOfId(id);
-        if (i < 0) return;
-        messagesModel.setProperty(i, "content", messagesModel.get(i).content + delta);
+        if (_mirrorStreamId !== id) {
+            _flushStreamBuffer();
+            _mirrorStreamId = id;
+            _streamContent = "";
+            _streamThinking = "";
+        }
+        _streamContent += delta;
+        _pendStreamId = id;
+        if (!streamFlushTimer.running) streamFlushTimer.start();
     }
 
     function _appendThinking(id, delta) {
-        var i = _indexOfId(id);
-        if (i < 0) return;
-        messagesModel.setProperty(i, "thinking", messagesModel.get(i).thinking + delta);
+        if (_mirrorStreamId !== id) {
+            _flushStreamBuffer();
+            _mirrorStreamId = id;
+            _streamContent = "";
+            _streamThinking = "";
+        }
+        _streamThinking += delta;
+        _pendStreamId = id;
+        if (!streamFlushTimer.running) streamFlushTimer.start();
     }
 
     // Tool call log: one entry per call, running → ok | error.
@@ -1632,6 +1683,7 @@ Item {
         var name = String(toolName || "");
         if (phase === "call") {
             // thinkingAt interleaves the chip into the pondering flow.
+            _flushStreamBuffer();
             next.push({ name: name, state: "running", detail: "",
                         startMs: Date.now(), endMs: 0,
                         thinkingAt: messagesModel.get(i).thinking.length });
@@ -1806,6 +1858,7 @@ Item {
 
         onStreamFinalized: (streamId, stats, usage) => {
             root._stopWatchdog();
+            root._flushStreamBuffer();
             root._setMsg(streamId, {
                 state: "done", stats: stats,
                 usage: usage ? JSON.stringify(usage) : ""
@@ -1817,12 +1870,14 @@ Item {
 
         onStreamError: (streamId, message) => {
             root._stopWatchdog();
+            root._clearStreamBuffer();
             root._setMsg(streamId, { state: "error", content: message, stats: "" });
             root._onTurnFinished();
         }
 
         onStreamCancelled: (streamId, stats) => {
             root._stopWatchdog();
+            root._flushStreamBuffer();
             root._setMsg(streamId, { state: "cancelled", stats: stats });
             root._onTurnFinished();
         }
@@ -1889,6 +1944,7 @@ Item {
             var id = streaming.activeStreamId;
             var i = root._indexOfId(id);
             if (i < 0 || messagesModel.get(i).state !== "streaming") return;
+            root._clearStreamBuffer();   // error replaces partial content
             root._setMsg(id, {
                 state: "error",
                 content: "Request watchdog fired — the provider never responded. Check that curl is installed and the provider is reachable."
