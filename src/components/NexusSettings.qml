@@ -59,6 +59,14 @@ Item {
         service.saveSetting(key, value);
     }
 
+    // Collapsible sections and scroll always reopen at their default
+    // (collapsed / top) state instead of resuming where you left off.
+    function resetSections() {
+        providersSection.expandedId = "";
+        mcpSection.expandedId = "";
+        settingsScroll.contentY = 0;
+    }
+
     // Opaque-to-panel backdrop: same color as the panel container, so
     // the chat below does not bleed through the settings page.
     Rectangle {
@@ -97,6 +105,7 @@ Item {
 
             // ── Providers (multi-provider instances) ──────────────────
             ProvidersSection {
+                id: providersSection
                 Layout.fillWidth: true
                 service: settings.service
             }
@@ -109,6 +118,7 @@ Item {
 
             // ── MCP card ──────────────────────────────────────────────
             MCPSection {
+                id: mcpSection
                 Layout.fillWidth: true
                 service: settings.service
             }

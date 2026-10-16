@@ -19,8 +19,13 @@ Item {
         State { name: "settings" }
     ]
 
-    // Save on leave
-    onStateChanged: if (state !== "settings") chat.forceActiveFocus();
+    // Save on leave; collapse the settings sections back to defaults.
+    onStateChanged: {
+        if (state !== "settings") {
+            chat.forceActiveFocus();
+            settingsView.resetSections();
+        }
+    }
 
     // Called by NexusPanel when the panel finishes sliding in.
     function focusInput() {
