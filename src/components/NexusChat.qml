@@ -172,6 +172,7 @@ Item {
                 anchors.fill: parent
                 radius: Theme.cornerRadius
                 visible: chat.service && chat.service.historyEnabled
+                         && opacity > 0.01
                 opacity: chat.historyOpen ? 1 : 0
                 color: Theme.withAlpha(Theme.surfaceContainerLowest, 0.55)
                 Behavior on opacity { NumberAnimation { duration: 200 } }

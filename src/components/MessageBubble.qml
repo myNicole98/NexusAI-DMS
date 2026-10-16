@@ -83,10 +83,12 @@ Rectangle {
 
     // Small icon button used in message footers and the code-block
     // sticky bar. Rest color follows surfaceVariantText; hover shifts
-    // to the accent (Theme.primary) and the cursor becomes a hand —
-    // mirrors the pondering-header pattern above.
-    component HoverIcon : Item {
+    // to the accent (Theme.primary). HoverHandler + cursorShape — the
+    // exact recipe of the working bottom-bar chips; the base must be
+    // a Rectangle like those chips (plain Item ignored the cursor).
+    component HoverIcon : Rectangle {
         id: hov
+        color: "transparent"
         property string iconName: ""
         property int iconSize: 16
         property string iconColor: Theme.surfaceVariantText
