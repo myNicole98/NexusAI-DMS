@@ -20,19 +20,26 @@ Item {
     property string _lineBuffer: ""
     property string _tagBuffer: ""
     property bool _insideThinkTag: false
-    property real _startMs: 0
+    // Generation time excluding tool-call waits (see _pauseGeneration).
+    property real _genMs: 0
+    property real _genStartMs: 0
     property int _deltaCount: 0
     property int _apiTokens: 0
 
     signal streamContentUpdated(string streamId, string delta)
     signal streamThinkingUpdated(string streamId, string delta)
+    // Live stats + estimated usage (~2/s).
+    signal streamProgress(string streamId, string stats, var usage)
     // usage: {input, output} token counts for the request, or null
     // when the provider reported nothing.
     signal streamFinalized(string streamId, string stats, var usage)
     signal streamError(string streamId, string message)
     signal streamCancelled(string streamId, string stats)
 
-    readonly property int maxStreamBytes: 5 * 1024 * 1024
+    // Raw-stdout memory backstop (SSE envelope ~10x the text).
+    readonly property int maxStreamBytes: 64 * 1024 * 1024
+    // Model-visible runaway guard (chars).
+    readonly property int maxOutputChars: 4000000
     property string _pendingStdin: ""
     property var _queuedReq: null
     property int _gen: 0
@@ -74,7 +81,8 @@ Item {
         _lineBuffer = "";
         _tagBuffer = "";
         _insideThinkTag = false;
-        _startMs = 0;
+        _genMs = 0;
+        _genStartMs = 0;
         _deltaCount = 0;
         _apiTokens = 0;
         _seenToolCalls = false;
@@ -115,6 +123,7 @@ Item {
         if (!isStreaming) return;
         var id = activeStreamId;
         _flushTagBuffer();
+        _pauseGeneration();          // freeze clock before the readout
         _queuedReq = null;           // a Stop must never launch a parked request later
         isStreaming = false;
         activeStreamId = "";
@@ -146,7 +155,7 @@ Item {
 
     function _contentDelta(id, text) {
         if (!text) return;
-        if (_startMs === 0) _startMs = Date.now();
+        if (_genStartMs === 0) _genStartMs = Date.now();
         _deltaCount++;
         _content += text;
         streamContentUpdated(id, text);
@@ -154,9 +163,23 @@ Item {
 
     function _thinkingDelta(id, text) {
         if (!text) return;
-        if (_startMs === 0) _startMs = Date.now();
+        if (_genStartMs === 0) _genStartMs = Date.now();
+        _deltaCount++;
         _thinking += text;
         streamThinkingUpdated(id, text);
+    }
+
+    // Stop the generation clock during a tool wait.
+    function _pauseGeneration() {
+        if (_genStartMs > 0) {
+            _genMs += Date.now() - _genStartMs;
+            _genStartMs = 0;
+        }
+    }
+
+    function _genSeconds() {
+        var ms = _genMs + (_genStartMs > 0 ? (Date.now() - _genStartMs) : 0);
+        return ms / 1000;
     }
 
     function _handleChunk(chunk) {
@@ -213,6 +236,14 @@ Item {
                 return;
             }
         }
+
+        // Runaway guard.
+        if (_content.length + _thinking.length > maxOutputChars) {
+            fetcher.running = false;
+            _fail("Response exceeded the output cap (" +
+                  Math.round(maxOutputChars / 1000) +
+                  "k characters). The model appears to be repeating itself.");
+        }
     }
 
     function _handleFinished(raw) {
@@ -267,6 +298,7 @@ Item {
         var id = activeStreamId;
         _flushTagBuffer();
         _insideThinkTag = false;
+        _pauseGeneration();          // close clock
         isStreaming = false;
         activeStreamId = "";
         streamFinalized(id, _stats(), _usage);
@@ -290,6 +322,7 @@ Item {
             return;
         }
         var call = _pendingToolCalls.shift();
+        _pauseGeneration();          // don't count the tool wait
         var toolName = call.function ? call.function.name : call.name;
         var toolArgs = Providers.parseToolArgs(
             call.function ? call.function.arguments : call.arguments);
@@ -365,14 +398,38 @@ Item {
     }
 
     function _stats() {
-        if (_startMs === 0) return "";
-        var seconds = (Date.now() - _startMs) / 1000;
+        var seconds = _genSeconds();
+        if (seconds <= 0) return "";
         var label = seconds.toFixed(1) + "s";
         var tokens = _apiTokens > 0 ? _apiTokens : _deltaCount;
         if (tokens > 0 && seconds > 0.5)
             label += " \u00b7 " + (_apiTokens > 0 ? "" : "~") +
                      (tokens / seconds).toFixed(1) + " tok/s";
         return label;
+    }
+
+    // Estimated usage: real counts when known, else chars/4.
+    function _liveUsage() {
+        var input = (_usage && _usage.input > 0) ? _usage.input : 0;
+        var output = _apiTokens > 0
+            ? _apiTokens
+            : Math.round((_content.length + _thinking.length) / 4);
+        return { input: input, output: output };
+    }
+
+    function _emitProgress() {
+        // Also emits during a tool wait, showing the frozen tok/s.
+        if (!isStreaming || (_genStartMs === 0 && _genMs === 0)) return;
+        streamProgress(activeStreamId, _stats(), _liveUsage());
+    }
+
+    // Live stats ticker (runs while streaming).
+    Timer {
+        id: progressTimer
+        interval: 500
+        repeat: true
+        running: root.isStreaming
+        onTriggered: root._emitProgress()
     }
 
     Process {

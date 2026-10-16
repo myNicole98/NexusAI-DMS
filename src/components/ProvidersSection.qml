@@ -364,6 +364,8 @@ Item {
             onAccepted: modelRow.commitRename()
             onActiveFocusChanged: if (!activeFocus) modelRow.commitRename()
             Keys.onEscapePressed: modelRow.editing = false
+            // Restore the I-beam over the edit field.
+            HoverHandler { cursorShape: Qt.IBeamCursor }
         }
 
         // Pencil: opens the inline rename editor.
@@ -866,9 +868,13 @@ Item {
                                     width: (cardBody.width - Theme.spacingS) / 2
                                     label: modelData && modelData.id ? String(modelData.id) : ""
                                     providerId: block.pid
-                                    displayLabel: root.service && modelData && modelData.id
-                                        ? root.service.modelLabel(block.pid, String(modelData.id))
-                                        : (modelData && modelData.id ? String(modelData.id) : "")
+                                    displayLabel: {
+                                        var _v = root.service
+                                            ? root.service.providersVersion : 0;
+                                        return root.service && modelData && modelData.id
+                                            ? root.service.modelLabel(block.pid, String(modelData.id))
+                                            : (modelData && modelData.id ? String(modelData.id) : "");
+                                    }
                                     iconStem: {
                                         // Unused read — dependency trick (see
                                         // ModelSelector.activeStem): subscribes
@@ -880,10 +886,18 @@ Item {
                                                                       String(block.modelData.type || ""))
                                             : "";
                                     }
-                                    checked: block.modelData && block.modelData.checkedModels
-                                        && modelData && modelData.id
-                                        ? block.modelData.checkedModels.indexOf(String(modelData.id)) >= 0
-                                        : false
+                                    checked: {
+                                        // getProvider: block.modelData is a stale
+                                        // snapshot; providersVersion re-runs this.
+                                        var _v = root.service
+                                            ? root.service.providersVersion : 0;
+                                        var inst = root.service
+                                            ? root.service.getProvider(block.pid) : null;
+                                        return inst && inst.checkedModels
+                                            && modelData && modelData.id
+                                            ? inst.checkedModels.indexOf(String(modelData.id)) >= 0
+                                            : false;
+                                    }
                                     onRenamed: (text) => {
                                         if (!root.service || block.pid.length === 0
                                             || !modelData || !modelData.id) return;
@@ -900,20 +914,7 @@ Item {
                                     onToggled: {
                                         if (!root.service || block.pid.length === 0
                                             || !modelData || !modelData.id) return;
-                                        root.animKey = "m:" + block.pid + "/"
-                                            + String(modelData.id);
-                                        root.animFrom = block.modelData.checkedModels
-                                            ? block.modelData.checkedModels.indexOf(String(modelData.id)) >= 0
-                                            : false;
                                         root.service.toggleModel(block.pid, String(modelData.id));
-                                    }
-                                    Component.onCompleted: {
-                                        var key = "m:" + block.pid + "/"
-                                            + (modelData && modelData.id ? String(modelData.id) : "");
-                                        if (root.animKey === key) {
-                                            armFrom(root.animFrom);
-                                            root.animKey = "";
-                                        }
                                     }
                                 }
                             }

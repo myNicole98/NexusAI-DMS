@@ -44,6 +44,8 @@ Item {
     // memory only).
 
     property var providers: []               // persisted as JSON "providers"
+    // Bumped on in-place instance edits; avoids a full Repeater rebuild.
+    property int providersVersion: 0
     property string activeProviderId: ""     // persisted
     property string activeModel: ""          // persisted
     // Model/provider switches invalidate the meter window (probe and
@@ -142,6 +144,9 @@ Item {
     // randomization rules as the composer placeholder.
     property string ponderingText: ""
     property var _ponderingLines: []
+
+    // Live tok/s for the active stream (kept out of the ListModel).
+    property string streamingStats: ""
 
     // Startup icon-folder scan: each resources/icons/models/<stem>.svg
     // auto-binds a /<stem>/i rule (ModelIcons.setAutoIcons), so
@@ -305,6 +310,12 @@ Item {
         for (var i = 0; i < providers.length; i++)
             clones.push(providers[i] ? Object.assign({}, providers[i]) : null);
         providers = clones;
+        providersVersion++;
+    }
+
+    // In-place edit notification (no array reassignment).
+    function _bumpProviders() {
+        providersVersion++;
     }
 
     function getProvider(id) {
@@ -565,7 +576,7 @@ Item {
         if (clean) labels[String(modelId)] = clean;
         else delete labels[String(modelId)];
         inst.modelLabels = labels;
-        _touchProviders();
+        _bumpProviders();
         _persistProviders();
     }
 
@@ -595,7 +606,7 @@ Item {
             checked.push(modelName);
         }
         inst.checkedModels = checked;
-        _touchProviders();
+        _bumpProviders();
         _persistProviders();
     }
 
@@ -1565,6 +1576,7 @@ Item {
             systemPrompt: systemPrompt,
             messages: _historyForRequest()
         }).messages;
+        streamingStats = "";
         streaming.begin(streamId);
         // Seed tool-round memory: without it a relaunch would start
         // with the assistant turn, which Gemini/Z.AI reject (400).
@@ -1947,8 +1959,20 @@ Item {
         onToolActivity: (streamId, toolName, phase, detail) =>
             root._appendToolLog(streamId, toolName, phase, detail)
 
+        onStreamProgress: (streamId, stats, usage) => {
+            root.streamingStats = stats;
+            if (usage) {
+                var prev = root.lastUsage || { input: 0, output: 0 };
+                root.lastUsage = {
+                    input: usage.input > 0 ? usage.input : prev.input,
+                    output: usage.output
+                };
+            }
+        }
+
         onStreamFinalized: (streamId, stats, usage) => {
             root._stopWatchdog();
+            root.streamingStats = "";
             root._flowClose();
             root._flushStreamBuffer();
             root._setMsg(streamId, {
@@ -1962,6 +1986,7 @@ Item {
 
         onStreamError: (streamId, message) => {
             root._stopWatchdog();
+            root.streamingStats = "";
             root._clearStreamBuffer();
             root._setMsg(streamId, { state: "error", content: message, stats: "" });
             root._onTurnFinished();
@@ -1969,6 +1994,7 @@ Item {
 
         onStreamCancelled: (streamId, stats) => {
             root._stopWatchdog();
+            root.streamingStats = "";
             // Cancelled keeps the partial content — flush it.
             root._flowClose();
             root._flushStreamBuffer();

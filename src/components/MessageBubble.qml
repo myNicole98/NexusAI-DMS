@@ -42,6 +42,10 @@ Rectangle {
 
     readonly property bool isUser: role === "user"
     readonly property bool isStreaming: msgState === "streaming"
+    // Live tok/s while streaming, else final stats.
+    readonly property string footerStats: bubble.isStreaming
+        ? (bubble.service ? bubble.service.streamingStats : "")
+        : stats
     // Pause the reveal while the panel is hidden.
     readonly property bool _winVisible:
         Window.window ? Window.window.visible : true
@@ -49,10 +53,12 @@ Rectangle {
     // Display label for the assistant header: the user's custom
     // rename when one exists, else the logical id. Resolves live, so
     // later renames update existing bubbles too.
-    readonly property string modelLabel:
-        bubble.service
-        ? bubble.service.modelLabel(bubble.modelProviderId, bubble.modelUsed)
-        : bubble.modelUsed
+    readonly property string modelLabel: {
+        var _v = bubble.service ? bubble.service.providersVersion : 0;
+        return bubble.service
+            ? bubble.service.modelLabel(bubble.modelProviderId, bubble.modelUsed)
+            : bubble.modelUsed;
+    }
 
     // Parsed attachments (safely [] on parse error).
     readonly property var attachmentsArr: {
@@ -804,7 +810,8 @@ Rectangle {
         // fillers carry the slack width.
         RowLayout {
             Layout.fillWidth: true
-            visible: !isStreaming && (bubble.content.length > 0 || stats.length > 0)
+            // Visible mid-stream for the live tok/s readout.
+            visible: bubble.content.length > 0 || bubble.footerStats.length > 0
             spacing: 8
 
             Item {
@@ -829,21 +836,21 @@ Rectangle {
             // Assistant: regenerate (hidden on error — the Retry
             // button covers that state) + copy.
             HoverIcon {
-                visible: !isUser && msgState !== "error"
+                visible: !isUser && msgState !== "error" && !bubble.isStreaming
                 iconName: "restart_alt"
                 onClicked: if (bubble.service && bubble.msgId.length > 0)
                     bubble.service.regenerateMessage(bubble.msgId)
             }
             HoverIcon {
-                visible: !isUser && bubble.content.length > 0
+                visible: !isUser && bubble.content.length > 0 && !bubble.isStreaming
                 iconName: "content_copy"
                 onClicked: Quickshell.execDetached(
                     ["dms", "cl", "copy", bubble.content])
             }
 
             Text {
-                visible: stats.length > 0
-                text: stats
+                visible: bubble.footerStats.length > 0
+                text: bubble.footerStats
                 color: Theme.surfaceVariantText
                 font.pixelSize: 11
             }
@@ -869,6 +876,8 @@ Rectangle {
         id: textSegComp
         TextArea {
             property var seg: null
+            // Assigned by the shared segment Loader; unused here.
+            property bool live: false
             readOnly: true
             textFormat: TextEdit.RichText
             wrapMode: TextEdit.Wrap
@@ -894,25 +903,45 @@ Rectangle {
         Rectangle {
             id: codeRect
             property var seg: null
+            // Streaming (last) segment.
+            property bool live: false
             readonly property string rawCode: seg ? seg.code : ""
             readonly property bool tall: bubble.viewportHeight > 0
                 && height >= bubble.viewportHeight - 40
             readonly property int headerH: 34
-            // block top in viewport coords: fully REACTIVE (delegate
-            // y + loader y − contentY) — a mapToItem ticker would lag
-            // the scroll by a frame and make the bar bounce
-            readonly property real _viewY: 10 + parent.y
-                + (bubble.parent ? bubble.parent.y : 0)
-                - (bubble.listView ? bubble.listView.contentY : 0)
+            // Block top in viewport coords; walk the ancestor chain and
+            // subtract the scroll offset.
+            readonly property real _viewY: {
+                var y = 0;
+                var it = codeRect;
+                while (it && it !== bubble) {
+                    y += it.y;
+                    it = it.parent;
+                }
+                if (bubble.parent) y += bubble.parent.y;
+                return y - (bubble.listView ? bubble.listView.contentY : 0);
+            }
             // the bar sticks to the viewport top while the block is
             // scrolled, clamped inside the block
             readonly property real headerY:
                 Math.max(0, Math.min(height - headerH, -_viewY))
 
+            // Lines shown before the block scrolls internally.
+            readonly property int maxCodeLines: 50
+            readonly property real lineH: codeMetrics.height
+            readonly property real maxCodeH: Math.round(maxCodeLines * lineH)
+
             color: Theme.withAlpha(Theme.surfaceContainerLowest, 0.75)
             radius: 8
             implicitHeight: codeCol.implicitHeight + headerH + 10
             clip: true
+
+            TextMetrics {
+                id: codeMetrics
+                font.family: "monospace"
+                font.pixelSize: 12
+                text: "Mg"
+            }
 
             ColumnLayout {
                 id: codeCol
@@ -921,28 +950,57 @@ Rectangle {
                 anchors.topMargin: headerH + 8
                 spacing: 4
 
-                TextArea {
+                // Capped, self-contained scroller.
+                Flickable {
+                    id: codeFlick
                     Layout.fillWidth: true
-                    readOnly: true
-                    textFormat: TextEdit.RichText
-                    wrapMode: TextEdit.Wrap
-                    // RichText collapses literal newlines; the pre-wrap
-                    // block preserves them and still wraps long lines
-                    // (same pattern as Markdown.js fenced blocks).
-                    text: codeRect.seg
-                        ? "<pre style=\"white-space: pre-wrap; margin: 0;\">"
-                          + SyntaxHighlight.highlightCode(
-                              codeRect.seg.code, codeRect.seg.lang,
-                              bubble.mdColors.syntax) + "</pre>"
-                        : ""
-                    color: Theme.surfaceText
-                    font.family: "monospace"
-                    font.pixelSize: 12
-                    background: null
-                    leftPadding: 0
-                    rightPadding: 0
-                    topPadding: 0
-                    bottomPadding: 0
+                    implicitHeight:
+                        Math.min(codeText.contentHeight, codeRect.maxCodeH)
+                    contentHeight: codeText.contentHeight
+                    contentWidth: width
+                    clip: true
+                    boundsBehavior: Flickable.StopAtBounds
+                    flickableDirection: Flickable.VerticalFlick
+
+                    // Bottom-follow while streaming; scroll up to release.
+                    property bool follow: true
+                    property real _lastY: 0
+                    function chase() {
+                        if (!codeRect.live || !follow || height <= 0) return;
+                        var target = Math.max(0, contentHeight - height);
+                        if (Math.abs(contentY - target) < 0.5) return;
+                        contentY = target;
+                    }
+                    onContentHeightChanged: chase()
+                    onHeightChanged: chase()
+                    onContentYChanged: {
+                        if (contentY < _lastY - 2) follow = false;
+                        _lastY = contentY;
+                        if (atYEnd) follow = true;
+                    }
+                    onDraggingChanged: if (dragging) follow = false
+                    onFlickingChanged: if (flicking) follow = false
+
+                    TextEdit {
+                        id: codeText
+                        width: codeFlick.width
+                        readOnly: true
+                        textFormat: TextEdit.RichText
+                        wrapMode: TextEdit.Wrap
+                        // pre-wrap keeps newlines and wraps long lines.
+                        text: codeRect.seg
+                            ? "<pre style=\"white-space: pre-wrap; margin: 0;\">"
+                              + SyntaxHighlight.highlightCode(
+                                  codeRect.seg.code, codeRect.seg.lang,
+                                  bubble.mdColors.syntax) + "</pre>"
+                            : ""
+                        color: Theme.surfaceText
+                        font.family: "monospace"
+                        font.pixelSize: 12
+                        selectByMouse: true
+                    }
+
+                    ScrollBar.vertical: DankScrollbar {}
                 }
             }
 
@@ -1422,8 +1480,15 @@ Rectangle {
                     Layout.fillWidth: true
                     sourceComponent:
                         seg && seg.type === "code" ? codeSegComp : textSegComp
-                    onLoaded: item.seg = Qt.binding(
-                        function () { return segLoader.seg; })
+                    onLoaded: {
+                        item.seg = Qt.binding(
+                            function () { return segLoader.seg; })
+                        // Mark the streaming (last) segment as live.
+                        item.live = Qt.binding(function () {
+                            return textEntry.live
+                                && segLoader.index === textEntry.segs.length - 1;
+                        })
+                    }
                 }
             }
         }

@@ -21,10 +21,12 @@ Rectangle {
 
     // No-op placeholder while the service is missing; keep the chip
     // visible so the layout is stable.
-    readonly property string modelLabel:
-        (service && service.activeModel && service.activeModel.length > 0)
+    readonly property string modelLabel: {
+        var _v = service ? service.providersVersion : 0;
+        return (service && service.activeModel && service.activeModel.length > 0)
             ? service.modelLabel(service.activeProviderId, service.activeModel)
-            : "set model"
+            : "set model";
+    }
     // Brand stem of the model in use ("" when none is active).
     readonly property string activeStem: {
         // Unused on purpose: reading modelIconStems is the QML
@@ -55,6 +57,7 @@ Rectangle {
     // reassignment pattern. Stale pins (provider deleted) are skipped.
     function buildRows(filter) {
         if (!service) return [];
+        var _v = service.providersVersion;   // dependency: in-place model edits
         var f = String(filter || "").toLowerCase();
         var rows = [];
         var pins = service.pinnedModels || [];

@@ -18,7 +18,10 @@ var KEYWORDS = {
 var ALIAS = { javascript: "js", jsx: "js", tsx: "ts", typescript: "ts",
               py: "python", python3: "python", sh: "bash", shell: "bash",
               zsh: "bash", console: "bash", "c++": "cpp", "c++11": "cpp",
-              golang: "go", rs: "rust" };
+              golang: "go", rs: "rust", htm: "html", xhtml: "html" };
+
+// Markup: tag-aware tokenizer (keyword regex can't express it).
+var MARKUP = { html: true, xml: true, svg: true };
 
 function esc(s) {
     return s.replace(/&/g, "&amp;").replace(/</g, "&lt;")
@@ -30,12 +33,58 @@ function span(color, text) {
     return '<span style="color: ' + color + ';">' + esc(text) + "</span>";
 }
 
+// Attributes inside a tag.
+function highlightAttrs(s, palette) {
+    var re = /([A-Za-z_][\w:.-]*)(\s*=\s*)("[^"]*"|'[^']*'|[^\s">]+)?/g;
+    var out = "";
+    var last = 0;
+    var m;
+    while ((m = re.exec(s)) !== null) {
+        out += esc(s.substring(last, m.index));
+        out += span(palette.type, m[1]);
+        out += esc(m[2]);
+        if (m[3] !== undefined) out += span(palette.string, m[3]);
+        last = m.index + m[0].length;
+    }
+    out += esc(s.substring(last));
+    return out;
+}
+
+// HTML/XML/SVG tokenizer.
+function highlightHtml(code, palette) {
+    palette = palette || {};
+    var re = /(<!--[\s\S]*?-->)|(<!DOCTYPE[^>]*>)|(<\/?)([A-Za-z][\w:.-]*)((?:\s+[A-Za-z_][\w:.-]*(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s">]+))?)*)(\/?>)/gi;
+    var out = "";
+    var last = 0;
+    var m;
+    while ((m = re.exec(code)) !== null) {
+        out += esc(code.substring(last, m.index));
+        if (m[1] !== undefined) {
+            out += span(palette.comment, m[1]);
+        } else if (m[2] !== undefined) {
+            out += span(palette.comment, m[2]);
+        } else {
+            out += esc(m[3]);
+            out += span(palette.keyword, m[4]);
+            if (m[5]) out += highlightAttrs(m[5], palette);
+            out += esc(m[6]);
+        }
+        last = m.index + m[0].length;
+    }
+    out += esc(code.substring(last));
+    return out;
+}
+
 // One combined regex pass, longest-priority tokens first.
 function highlightCode(code, lang, palette) {
     if (typeof code !== "string") return "";
     code = code.replace(/[\x00\x01]/g, "");
     palette = palette || {};
-    var l = ALIAS[lang] || lang;
+    var l = String(lang || "").toLowerCase();
+    l = ALIAS[l] || l;
+
+    if (MARKUP[l]) return highlightHtml(code, palette);
+
     var keywords = KEYWORDS[l];
 
     if (!keywords) {
