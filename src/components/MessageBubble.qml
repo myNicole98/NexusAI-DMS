@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtQuick.Window
 import Quickshell
 import qs.Common
 import qs.Widgets
@@ -41,6 +42,9 @@ Rectangle {
 
     readonly property bool isUser: role === "user"
     readonly property bool isStreaming: msgState === "streaming"
+    // Pause the reveal while the panel is hidden.
+    readonly property bool _winVisible:
+        Window.window ? Window.window.visible : true
 
     // Display label for the assistant header: the user's custom
     // rename when one exists, else the logical id. Resolves live, so
@@ -550,7 +554,7 @@ Rectangle {
         id: renderTimer
         interval: 20
         repeat: true
-        running: bubble.isStreaming && !bubble.isUser
+        running: bubble.isStreaming && !bubble.isUser && bubble._winVisible
         onTriggered: bubble.revealTick()
     }
 

@@ -97,6 +97,8 @@ Item {
     property string systemPrompt: ""
     property int timeoutSeconds: 300
     property string panelEdge: "right"
+    // "docked" edge slide-in | "floating" inset popup.
+    property string panelMode: "docked"
 
     // ── Context meter ─────────────────────────────────────────────
     // Last response's token usage ({input, output}); reset on
@@ -203,6 +205,8 @@ Item {
         }
         timeoutSeconds = PluginService.loadPluginData(pluginId, "timeoutSeconds", 300);
         panelEdge = String(PluginService.loadPluginData(pluginId, "panelEdge", "right"));
+        var storedMode = String(PluginService.loadPluginData(pluginId, "panelMode", "docked"));
+        panelMode = storedMode === "floating" ? "floating" : "docked";
         // Self-heal a stale/foreign stored chord value.
         var storedSendModifier = String(PluginService.loadPluginData(pluginId, "sendModifier", "none"));
         sendModifier = ["none", "shift", "ctrl", "alt"].indexOf(storedSendModifier) >= 0

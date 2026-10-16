@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Window
 import qs.Common
 import qs.Widgets
 
@@ -8,6 +9,10 @@ ListView {
 
     property var service: null
     model: service ? service.messagesModel : null
+
+    // Pause the conveyor while the panel is hidden.
+    readonly property bool _winVisible:
+        Window.window ? Window.window.visible : true
 
     clip: true
     spacing: 10
@@ -50,8 +55,9 @@ ListView {
     // render loop — a Timer races/mismatches flush and frame timing,
     // which read as choppy nudging).
     FrameAnimation {
-        running: (list.pinned && list.service && list.service.isStreaming)
-                 || list._assertTicks > 0
+        running: list._winVisible
+                 && ((list.pinned && list.service && list.service.isStreaming)
+                     || list._assertTicks > 0)
         onTriggered: list.step()
     }
 

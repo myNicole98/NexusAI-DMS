@@ -31,6 +31,7 @@ Item {
         pluginId: root.pluginId
     }
 
+    // One panel per screen; docked or floating per nexusService.panelMode.
     Variants {
         id: variants
         model: Quickshell.screens
