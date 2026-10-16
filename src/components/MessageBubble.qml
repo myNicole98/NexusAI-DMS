@@ -90,7 +90,7 @@ Rectangle {
         id: hov
         color: "transparent"
         property string iconName: ""
-        property int iconSize: 16
+        property int iconSize: 18
         property string iconColor: Theme.surfaceVariantText
         signal clicked()
         property bool _hovered: false
@@ -107,9 +107,10 @@ Rectangle {
             color: hov._hovered ? Theme.primary : hov.iconColor
             Behavior on color { ColorAnimation { duration: 180 } }
         }
-        // 16px touch target — the icon paints at iconSize inside.
-        implicitWidth: 16
-        implicitHeight: 16
+        // Touch target matches the icon; the glyph paints at
+        // iconSize inside.
+        implicitWidth: 18
+        implicitHeight: 18
     }
 
     function _highlight(code, lang) {
