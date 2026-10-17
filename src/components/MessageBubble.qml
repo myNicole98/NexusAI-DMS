@@ -876,8 +876,6 @@ Rectangle {
         id: textSegComp
         TextArea {
             property var seg: null
-            // Assigned by the shared segment Loader; unused here.
-            property bool live: false
             readOnly: true
             textFormat: TextEdit.RichText
             wrapMode: TextEdit.Wrap
@@ -903,8 +901,6 @@ Rectangle {
         Rectangle {
             id: codeRect
             property var seg: null
-            // Streaming (last) segment.
-            property bool live: false
             readonly property string rawCode: seg ? seg.code : ""
             readonly property bool tall: bubble.viewportHeight > 0
                 && height >= bubble.viewportHeight - 40
@@ -926,81 +922,44 @@ Rectangle {
             readonly property real headerY:
                 Math.max(0, Math.min(height - headerH, -_viewY))
 
-            // Lines shown before the block scrolls internally.
-            readonly property int maxCodeLines: 50
-            readonly property real lineH: codeMetrics.height
-            readonly property real maxCodeH: Math.round(maxCodeLines * lineH)
+            // Header toggles the code body (settings-menu style).
+            property bool collapsed: false
 
             color: Theme.withAlpha(Theme.surfaceContainerLowest, 0.75)
             radius: 8
-            implicitHeight: codeCol.implicitHeight + headerH + 10
+            implicitHeight: collapsed
+                ? headerH
+                : codeCol.implicitHeight + headerH + 10
             clip: true
-
-            TextMetrics {
-                id: codeMetrics
-                font.family: "monospace"
-                font.pixelSize: 12
-                text: "Mg"
-            }
 
             ColumnLayout {
                 id: codeCol
+                visible: !codeRect.collapsed
                 anchors { left: parent.left; right: parent.right; top: parent.top }
                 anchors.margins: 6
                 anchors.topMargin: headerH + 8
                 spacing: 4
 
-                // Capped, self-contained scroller.
-                Flickable {
-                    id: codeFlick
+                TextArea {
                     Layout.fillWidth: true
-                    implicitHeight:
-                        Math.min(codeText.contentHeight, codeRect.maxCodeH)
-                    contentHeight: codeText.contentHeight
-                    contentWidth: width
-                    clip: true
-                    boundsBehavior: Flickable.StopAtBounds
-                    flickableDirection: Flickable.VerticalFlick
-
-                    // Bottom-follow while streaming; scroll up to release.
-                    property bool follow: true
-                    property real _lastY: 0
-                    function chase() {
-                        if (!codeRect.live || !follow || height <= 0) return;
-                        var target = Math.max(0, contentHeight - height);
-                        if (Math.abs(contentY - target) < 0.5) return;
-                        contentY = target;
-                    }
-                    onContentHeightChanged: chase()
-                    onHeightChanged: chase()
-                    onContentYChanged: {
-                        if (contentY < _lastY - 2) follow = false;
-                        _lastY = contentY;
-                        if (atYEnd) follow = true;
-                    }
-                    onDraggingChanged: if (dragging) follow = false
-                    onFlickingChanged: if (flicking) follow = false
-
-                    TextEdit {
-                        id: codeText
-                        width: codeFlick.width
-                        readOnly: true
-                        textFormat: TextEdit.RichText
-                        wrapMode: TextEdit.Wrap
-                        // pre-wrap keeps newlines and wraps long lines.
-                        text: codeRect.seg
-                            ? "<pre style=\"white-space: pre-wrap; margin: 0;\">"
-                              + SyntaxHighlight.highlightCode(
-                                  codeRect.seg.code, codeRect.seg.lang,
-                                  bubble.mdColors.syntax) + "</pre>"
-                            : ""
-                        color: Theme.surfaceText
-                        font.family: "monospace"
-                        font.pixelSize: 12
-                        selectByMouse: true
-                    }
-
-                    ScrollBar.vertical: DankScrollbar {}
+                    readOnly: true
+                    textFormat: TextEdit.RichText
+                    wrapMode: TextEdit.Wrap
+                    // pre-wrap keeps newlines and wraps long lines.
+                    text: codeRect.seg
+                        ? "<pre style=\"white-space: pre-wrap; margin: 0;\">"
+                          + SyntaxHighlight.highlightCode(
+                              codeRect.seg.code, codeRect.seg.lang,
+                              bubble.mdColors.syntax) + "</pre>"
+                        : ""
+                    color: Theme.surfaceText
+                    font.family: "monospace"
+                    font.pixelSize: 12
+                    background: null
+                    leftPadding: 0
+                    rightPadding: 0
+                    topPadding: 0
+                    bottomPadding: 0
                 }
             }
 
@@ -1019,13 +978,47 @@ Rectangle {
                     anchors.fill: parent
                     anchors.margins: 4
 
-                    Text {
-                        visible: codeRect.seg && codeRect.seg.lang.length > 0
-                        text: codeRect.seg ? codeRect.seg.lang : ""
-                        color: Theme.surfaceVariantText
-                        font.pixelSize: 13
+                    // Toggle zone: chevron + language; whole area clickable.
+                    Item {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+
+                        RowLayout {
+                            anchors.left: parent.left
+                            anchors.verticalCenter: parent.verticalCenter
+                            spacing: 6
+
+                            DankIcon {
+                                name: "expand_more"
+                                size: 16
+                                color: codeBarHover.hovered
+                                    ? Theme.primary : Theme.surfaceVariantText
+                                rotation: codeRect.collapsed ? -90 : 0
+                                Behavior on rotation {
+                                    NumberAnimation {
+                                        duration: 180
+                                        easing.type: Easing.OutCubic
+                                    }
+                                }
+                            }
+
+                            Text {
+                                visible: codeRect.seg && codeRect.seg.lang.length > 0
+                                text: codeRect.seg ? codeRect.seg.lang : ""
+                                color: Theme.surfaceVariantText
+                                font.pixelSize: 13
+                            }
+                        }
+
+                        HoverHandler {
+                            id: codeBarHover
+                            cursorShape: Qt.PointingHandCursor
+                        }
+                        TapHandler {
+                            onTapped: codeRect.collapsed = !codeRect.collapsed
+                        }
                     }
-                    Item { Layout.fillWidth: true }
+
                     HoverIcon {
                         iconName: "content_copy"
                         iconColor: Theme.surfaceVariantText
@@ -1480,15 +1473,8 @@ Rectangle {
                     Layout.fillWidth: true
                     sourceComponent:
                         seg && seg.type === "code" ? codeSegComp : textSegComp
-                    onLoaded: {
-                        item.seg = Qt.binding(
-                            function () { return segLoader.seg; })
-                        // Mark the streaming (last) segment as live.
-                        item.live = Qt.binding(function () {
-                            return textEntry.live
-                                && segLoader.index === textEntry.segs.length - 1;
-                        })
-                    }
+                    onLoaded: item.seg = Qt.binding(
+                        function () { return segLoader.seg; })
                 }
             }
         }
