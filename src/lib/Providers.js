@@ -70,6 +70,12 @@ function curlCmd(timeoutSeconds) {
             "-w", STATUS_TRAILER];
 }
 
+function curlStreamCmd() {
+    return ["curl", "-K", "-", "-N", "-sS", "--no-buffer", "--show-error",
+            "--connect-timeout", "5",
+            "-w", STATUS_TRAILER];
+}
+
 function endsWithVersion(u) {
     return /\/v\d+$/.test(u);
 }
@@ -587,7 +593,7 @@ function buildChatRequest(instance, opts) {
     }
 
     config += 'data = "' + escapeCurlConfig(JSON.stringify(body)) + '"\n';
-    return { cmd: curlCmd(opts.timeoutSeconds), body: config };
+    return { cmd: stream ? curlStreamCmd() : curlCmd(opts.timeoutSeconds), body: config };
 }
 
 // Build { cmd, body } for GET <models endpoint>. Null when base invalid.

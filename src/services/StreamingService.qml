@@ -28,6 +28,9 @@ Item {
 
     signal streamContentUpdated(string streamId, string delta)
     signal streamThinkingUpdated(string streamId, string delta)
+    signal streamActivity(string streamId)
+    // Fired once data actually arrives; the coordinator disarms its
+    // never-responded watchdog so silent reasoning cannot kill a live turn.
     // Live stats + estimated usage (~2/s).
     signal streamProgress(string streamId, string stats, var usage)
     // usage: {input, output} token counts for the request, or null
@@ -184,6 +187,7 @@ Item {
 
     function _handleChunk(chunk) {
         if (!_live()) return;
+        if (chunk && chunk.length > 0) streamActivity(activeStreamId);
         var split = StreamParser.splitLines(chunk, _lineBuffer);
         _lineBuffer = split.buffer;
 

@@ -1613,7 +1613,7 @@ Item {
         }
         streaming.format = activeFormat;
         streaming.mcpService = toolsLive ? mcpRouter : null;
-        streamWatchdog.start();
+        _armWatchdog();
         ponderingText = pickPondering();
         streaming.launchCurl(req);
     }
@@ -1816,6 +1816,8 @@ Item {
         messagesModel.setProperty(i, "toolLog", JSON.stringify(next));
     }
 
+    function _armWatchdog() { streamWatchdog.start(); }
+
     function _stopWatchdog() { streamWatchdog.stop(); }
 
     // Tool router for MCP + native tools (see AGENTS.md "Native
@@ -1955,6 +1957,7 @@ Item {
 
         onStreamContentUpdated: (streamId, delta) => root._appendContent(streamId, delta)
         onStreamThinkingUpdated: (streamId, delta) => root._appendThinking(streamId, delta)
+        onStreamActivity: (streamId) => root._stopWatchdog()
         onStreamToolRoundReady: (streamId, messages) => root._launch(streamId, messages)
         onToolActivity: (streamId, toolName, phase, detail) =>
             root._appendToolLog(streamId, toolName, phase, detail)
@@ -2067,7 +2070,9 @@ Item {
             root._clearStreamBuffer();   // error replaces partial content
             root._setMsg(id, {
                 state: "error",
-                content: "Request watchdog fired — the provider never responded. Check that curl is installed and the provider is reachable."
+                content: "Request watchdog fired — the provider never sent any " +
+                         "data. Check that the provider is reachable and that " +
+                         "curl is installed."
             });
             streaming.reset();
         }
