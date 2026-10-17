@@ -152,6 +152,18 @@ PanelWindow {
     WlrLayershell.exclusiveZone: 0
     WlrLayershell.keyboardFocus: isVisible ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.None
 
+    // Same blur request DMS surfaces use (compositor ext-background-effect).
+    WindowBlur {
+        targetWindow: root
+        blurEnabled: root.isVisible
+        surfaceColor: panelSurface.color
+        blurX: slide.x + layeredContent.x + floatHost.x
+        blurY: floatHost.y
+        blurWidth: floatHost.width
+        blurHeight: floatHost.height
+        blurRadius: Theme.cornerRadius
+    }
+
     readonly property real dpr: CompositorService.getScreenScale(root.screen)
     readonly property real alignedWidth: Theme.px(activeWidth + gap, dpr)
     // Real surface size (root.width is unsynced on layer windows).

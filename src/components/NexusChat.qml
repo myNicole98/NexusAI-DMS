@@ -37,13 +37,13 @@ Item {
         anchors.fill: parent
         spacing: 8
 
-        // Chat box: same matugen hue as the panel, just more
-        // opaque — reads darker/more solid without graying out.
+        // Chat box: follows panel opacity, slightly darker for readability.
         Rectangle {
             Layout.fillWidth: true
             Layout.fillHeight: true
             radius: Theme.cornerRadius
-            color: Theme.withAlpha(Theme.surfaceContainer, 0.9)
+            color: Theme.withAlpha(Qt.darker(Theme.surfaceContainer, 1.15),
+                                   Theme.popupTransparency)
             clip: true
 
             MessageList {

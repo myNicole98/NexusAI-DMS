@@ -732,7 +732,8 @@ Rectangle {
             Layout.maximumWidth: bubble.maxBubbleWidth
             implicitHeight: userCol.implicitHeight + 20
             radius: 16
-            color: Theme.surfaceContainerHighest
+            color: Theme.withAlpha(Qt.darker(Theme.surfaceContainerHighest, 1.15),
+                                   Theme.popupTransparency)
             opacity: bubble.service && bubble.msgId.length > 0
                      && bubble.service.editingMessageId === bubble.msgId
                      ? 0.35 : 1
