@@ -2110,13 +2110,8 @@ Item {
             return;
         }
         // The backing service gets url/token via _pushMcpServerConfig;
-        // we only gate on user-facing conditions here.
         if (!inst.url) {
             _setMcpConnectionError(id, "Set a URL to connect.");
-            return;
-        }
-        if (!resolveMcpToken(id, inst.name)) {
-            _setMcpConnectionError(id, "Set an auth token to connect.");
             return;
         }
         if (svc.isConnected || svc.connecting) return;

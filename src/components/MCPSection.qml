@@ -525,8 +525,8 @@ Item {
                                 var inst = block.modelData;
                                 var envName = root.service.mcpEnvVar(String(inst.name || ""));
                                 return envName.length > 0
-                                    ? "No token — set one or export " + envName
-                                    : "No token — set one above";
+                                    ? "No token set — connecting without auth"
+                                    : "No token set — connecting without auth";
                             }
                             color: Theme.surfaceVariantText
                             font.pixelSize: 12

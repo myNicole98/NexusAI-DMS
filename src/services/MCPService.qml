@@ -58,8 +58,8 @@ Item {
         console.warn("NEXUS_MCP: connect requested — url:", mcpUrl,
             "token len:", mcpToken.length);
         if (connecting || isConnected) return;
-        if (!mcpUrl || !mcpToken) {
-            connectionError = "MCP URL and token are required.";
+        if (!mcpUrl) {
+            connectionError = "MCP URL is required.";
             return;
         }
         connectionError = "";
