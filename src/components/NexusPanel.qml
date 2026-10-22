@@ -154,9 +154,15 @@ PanelWindow {
 
     // Same blur request DMS surfaces use (compositor ext-background-effect).
     WindowBlur {
+        id: blurHelper
         targetWindow: root
         blurEnabled: root.isVisible
-        surfaceColor: panelSurface.color
+
+        Binding {
+            target: blurHelper
+            property: "surfaceColor"
+            value: panelSurface.color
+        }
         blurX: slide.x + layeredContent.x + floatHost.x
         blurY: floatHost.y
         blurWidth: floatHost.width
