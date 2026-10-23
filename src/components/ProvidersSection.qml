@@ -315,6 +315,11 @@ Item {
             text: modelRow.displayLabel
             color: Theme.surfaceText
             font.pixelSize: 13
+
+            // Line wrap
+            wrapMode: Text.Wrap
+            maximumLineCount: 2
+
             elide: Text.ElideRight
         }
 
@@ -823,7 +828,12 @@ Item {
                             Grid {
                                 id: modelGrid
                                 width: parent.width
-                                columns: 2
+
+                                // Switch to 1 column when in small size
+                                readonly property int minCellWidth: 300
+                                columns: Math.max(1, Math.min(2,
+                                    Math.floor(width / minCellWidth)))
+                                
                                 columnSpacing: Theme.spacingS
                                 rowSpacing: Theme.spacingXS
 
@@ -865,7 +875,9 @@ Item {
                                 delegate: ModelCheckRow {
                                     required property var modelData
 
-                                    width: (cardBody.width - Theme.spacingS) / 2
+                                    width: (modelGrid.width
+                                            - (modelGrid.columns - 1) * modelGrid.columnSpacing)
+                                           / modelGrid.columns
                                     label: modelData && modelData.id ? String(modelData.id) : ""
                                     providerId: block.pid
                                     displayLabel: {
