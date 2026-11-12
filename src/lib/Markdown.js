@@ -46,14 +46,27 @@ function splitCodeSegments(text) {
     return segs;
 }
 
-function styleAttr(colors, key, cssProp) {
-    if (!colors || !colors[key]) return "";
-    return ' style="' + cssProp + ": " + colors[key] + ';"';
+// One style attribute for anchors. A hovered link gets an opaque tinted
+// background + underline (the rich-text backgrounds must stay opaque:
+// Qt repaints table cells/lines in place under the message layer, and a
+// translucent brush composites again on each repaint).
+function linkStyle(colors, hovered) {
+    var parts = [];
+    var color = (hovered && colors && colors.linkHoverColor)
+        ? colors.linkHoverColor
+        : (colors && colors.linkColor);
+    if (color) parts.push("color: " + color);
+    if (hovered) {
+        if (colors && colors.linkHoverBg)
+            parts.push("background-color: " + colors.linkHoverBg);
+        parts.push("text-decoration: underline");
+    }
+    return parts.length ? ' style="' + parts.join("; ") + ';"' : "";
 }
 
 // ── Inline formatting (run on escaped text) ──────────────────────
 
-function fmtInline(escaped, colors) {
+function fmtInline(escaped, colors, hoverUrl) {
     var s = escaped;
 
     // inline code first; stash rendered spans behind \x01 placeholders so
@@ -79,14 +92,14 @@ function fmtInline(escaped, colors) {
         var u = safeUrl(url.replace(/&amp;/g, "&"));
         if (!u) return text;
         return '<a href="' + escapeHtml(u) + '"' +
-            styleAttr(colors, "linkColor", "color") + ">" + text + "</a>";
+            linkStyle(colors, hoverUrl && u === hoverUrl) + ">" + text + "</a>";
     });
 
     // autolink bare http(s) URLs
     s = s.replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, function (_, pre, url) {
         var u = url.replace(/&amp;/g, "&");
         return pre + '<a href="' + escapeHtml(u) + '"' +
-            styleAttr(colors, "linkColor", "color") + ">" + url + "</a>";
+            linkStyle(colors, hoverUrl && u === hoverUrl) + ">" + url + "</a>";
     });
 
     return s.replace(/\x01C(\d+)\x01/g, function (_, idx) {
@@ -96,7 +109,7 @@ function fmtInline(escaped, colors) {
 
 // ── Block pipeline ────────────────────────────────────────────────
 
-function markdownToHtml(text, colors, highlightFn) {
+function markdownToHtml(text, colors, highlightFn, hoverUrl) {
     if (typeof text !== "string" || text.length === 0) return "";
 
     // NUL/SOH are reserved as internal placeholder sentinels (\x00B…\x00
@@ -140,7 +153,7 @@ function markdownToHtml(text, colors, highlightFn) {
         if (buf.length === 0) return;
         // fmtInline per line: the autolink prefix (^|[\s(]) must see each
         // line start, which the "<br>" join would otherwise hide
-        html += "<p>" + buf.map(function (l) { return fmtInline(l, colors); })
+        html += "<p>" + buf.map(function (l) { return fmtInline(l, colors, hoverUrl); })
             .join("<br>") + "</p>";
     }
 
@@ -166,7 +179,7 @@ function markdownToHtml(text, colors, highlightFn) {
             html += "<h" + level + ' style="font-size: ' + sizes[level - 1] + ";" +
                 ((colors && colors.headingColor)
                     ? " color: " + colors.headingColor + ";" : "") + '">' +
-                fmtInline(hm[2].trim(), colors) + "</h" + level + ">";
+                fmtInline(hm[2].trim(), colors, hoverUrl) + "</h" + level + ">";
             i++;
             continue;
         }
@@ -194,7 +207,7 @@ function markdownToHtml(text, colors, highlightFn) {
                 ((colors && colors.blockquoteText)
                     ? " color: " + colors.blockquoteText + ";" : "") +
                 '; margin: 4px 0; padding: 4px 8px;">' +
-                quote.map(function (l) { return fmtInline(l, colors); })
+                quote.map(function (l) { return fmtInline(l, colors, hoverUrl); })
                     .join("<br>") + "</blockquote>";
             continue;
         }
@@ -222,13 +235,13 @@ function markdownToHtml(text, colors, highlightFn) {
                 "<tr" + ((colors && colors.tableHeaderBg)
                     ? ' bgcolor="' + colors.tableHeaderBg + '"' : "") + ">" +
                 head.map(function (h) {
-                    return "<th>" + fmtInline(h, colors) + "</th>";
+                    return "<th>" + fmtInline(h, colors, hoverUrl) + "</th>";
                 }).join("") + "</tr>";
             for (var r = 0; r < rows.length; r++) {
                 html += "<tr" + ((colors && colors.tableRowAltBg && r % 2 === 1)
                     ? ' bgcolor="' + colors.tableRowAltBg + '"' : "") + ">" +
                     rows[r].map(function (c) {
-                        return "<td>" + fmtInline(c, colors) + "</td>";
+                        return "<td>" + fmtInline(c, colors, hoverUrl) + "</td>";
                     }).join("") + "</tr>";
             }
             html += "</table>";
@@ -245,8 +258,8 @@ function markdownToHtml(text, colors, highlightFn) {
                 var item = lines[i].replace(/^\s*(?:\d+\.|[-*])\s+/, "");
                 var check = item.match(/^\[([ xX])\]\s+(.*)$/);
                 items.push(check
-                    ? (check[1] === " " ? "\u2610 " : "\u2611 ") + fmtInline(check[2], colors)
-                    : fmtInline(item, colors));
+                    ? (check[1] === " " ? "\u2610 " : "\u2611 ") + fmtInline(check[2], colors, hoverUrl)
+                    : fmtInline(item, colors, hoverUrl));
                 i++;
             }
             html += (ordered ? "<ol>" : "<ul>") +

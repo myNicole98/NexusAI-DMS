@@ -68,18 +68,24 @@ Rectangle {
         } catch (e) { return []; }
     }
 
-    // theme-driven palette for markdown
+    // theme-driven palette for markdown. Background tints are pre-blended
+    // to OPAQUE colors against the panel surface: messages live inside the
+    // panel's layer texture, and Qt repaints table cells/lines in place —
+    // a translucent brush gets composited again on every repaint (table
+    // headers visibly brighten toward the accent when a cell is clicked).
     readonly property var mdColors: ({
         codeBg: Theme.surfaceContainerHigh,
-        inlineCodeBg: Theme.withAlpha(Theme.surfaceText, 0.10),
+        inlineCodeBg: bubble.blendOver(Theme.surfaceText, Theme.surfaceContainer, 0.10),
         inlineCodeColor: Theme.primary,
-        blockquoteBg: Theme.withAlpha(Theme.surfaceContainerHighest, 0.5),
+        blockquoteBg: bubble.blendOver(Theme.surfaceContainerHighest, Theme.surfaceContainer, 0.5),
         blockquoteBorder: Theme.outlineVariant,
         blockquoteText: Theme.surfaceVariantText,
         linkColor: Theme.primary,
+        linkHoverColor: Theme.primary,
+        linkHoverBg: bubble.blendOver(Theme.surfaceText, Theme.surfaceContainer, 0.14),
         headingColor: Theme.surfaceText,
-        tableHeaderBg: Theme.withAlpha(Theme.primary, 0.08),
-        tableRowAltBg: Theme.withAlpha(Theme.surfaceText, 0.03),
+        tableHeaderBg: bubble.blendOver(Theme.primary, Theme.surfaceContainer, 0.08),
+        tableRowAltBg: bubble.blendOver(Theme.surfaceText, Theme.surfaceContainer, 0.03),
         tableBorderColor: Theme.outlineVariant,
         syntax: ({
             comment: Theme.surfaceVariantText,
@@ -125,6 +131,22 @@ Rectangle {
 
     function _highlight(code, lang) {
         return SyntaxHighlight.highlightCode(code, lang, mdColors.syntax);
+    }
+
+    // Opaque pre-blend of fg over bg at alpha (see mdColors).
+    function blendOver(fg, bg, alpha) {
+        return Qt.rgba(
+            bg.r + (fg.r - bg.r) * alpha,
+            bg.g + (fg.g - bg.g) * alpha,
+            bg.b + (fg.b - bg.b) * alpha,
+            1);
+    }
+
+    // Re-render one markdown segment with the hovered link styled.
+    // Deliberately bypasses _segCache: the hover variant must not evict
+    // the settled, hover-free html.
+    function markdownHoverHtml(text, hoverUrl) {
+        return Markdown.markdownToHtml(text, mdColors, _highlight, hoverUrl);
     }
 
     // ── Chronological flow (interleaved pondering) ────────────────
@@ -877,18 +899,44 @@ Rectangle {
         id: textSegComp
         TextArea {
             property var seg: null
+            // Qt only tracks link hover (and emits linkHovered) when the
+            // signal has a connection — this handler is what enables the
+            // hand cursor and the hover style in the first place.
+            property string hoverUrl: ""
+            readonly property bool hoverStyled: hoverUrl.length > 0
+                && seg && seg.type !== "code"
+                && bubble.msgState !== "streaming"
             readOnly: true
             textFormat: TextEdit.RichText
             wrapMode: TextEdit.Wrap
-            text: seg ? seg.html : ""
+            text: hoverStyled
+                ? bubble.markdownHoverHtml(seg.text, hoverUrl)
+                : (seg ? seg.html : "")
             color: bubble.msgState === "error" ? Theme.error : Theme.surfaceText
             background: null
             leftPadding: 0
             rightPadding: 0
             topPadding: 0
             bottomPadding: 0
+            onSegChanged: hoverUrl = ""
+            // Restyling replaces the document, so never do it while the
+            // user has a selection (it would be wiped).
+            onLinkHovered: (link) => {
+                if (selectedText.length === 0)
+                    hoverUrl = link || "";
+            }
+            onSelectedTextChanged: {
+                if (selectedText.length === 0 && hoverUrl.length > 0
+                        && hoveredLink.length === 0)
+                    hoverUrl = "";
+            }
             onLinkActivated: (link) => {
                 if (/^https?:\/\//i.test(link)) Qt.openUrlExternally(link);
+            }
+
+            HoverHandler {
+                cursorShape: hoverUrl.length > 0
+                    ? Qt.PointingHandCursor : undefined
             }
         }
     }
@@ -1193,17 +1241,28 @@ Rectangle {
 
                     // This box's thinking text: the live box streams
                     // through the fade machinery; closed boxes render
-                    // cached static markdown.
+                    // cached static markdown. Same link-hover treatment as
+                    // the body segments (settled text only).
                     TextArea {
                         width: pContent.width
+                        property string hoverUrl: ""
+                        readonly property bool hoverStyled: hoverUrl.length > 0
+                            && !ponderPane.live && !ponderPane.busy
+                            && bubble.msgState !== "streaming"
                         readOnly: true
                         textFormat: TextEdit.RichText
                         wrapMode: TextEdit.Wrap
                         text: ponderPane.live
                             ? bubble.renderedThinkingHtml
-                            : bubble.entryThinkHtml(
-                                  ponderPane.entry ? ponderPane.entry.a : 0,
-                                  ponderPane.entry ? ponderPane.entry.b : 0)
+                            : (hoverStyled
+                                ? bubble.markdownHoverHtml(
+                                      bubble.thinking.substring(
+                                          ponderPane.entry ? ponderPane.entry.a : 0,
+                                          ponderPane.entry ? ponderPane.entry.b : 0),
+                                      hoverUrl)
+                                : bubble.entryThinkHtml(
+                                      ponderPane.entry ? ponderPane.entry.a : 0,
+                                      ponderPane.entry ? ponderPane.entry.b : 0))
                         color: Theme.surfaceTextMedium
                         font.pixelSize: 12
                         background: null
@@ -1211,6 +1270,21 @@ Rectangle {
                         rightPadding: 0
                         topPadding: 0
                         bottomPadding: 0
+                        onVisibleChanged: if (!visible) hoverUrl = ""
+                        onLinkHovered: (link) => {
+                            if (selectedText.length === 0)
+                                hoverUrl = link || "";
+                        }
+                        onSelectedTextChanged: {
+                            if (selectedText.length === 0 && hoverUrl.length > 0
+                                    && hoveredLink.length === 0)
+                                hoverUrl = "";
+                        }
+
+                        HoverHandler {
+                            cursorShape: hoverUrl.length > 0
+                                ? Qt.PointingHandCursor : undefined
+                        }
                     }
 
                     // Tool chips issued straight out of this thinking
