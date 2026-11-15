@@ -15,18 +15,13 @@ AI assistant plugin for [DankMaterialShell](https://github.com/AvengeMedia/DankM
 - **Multi-Provider Ready:** Connect to standard cloud APIs or local providers.
 - **Vision Support:** Models with vision can be used with image attachments, even from clipboard
 - **Native Web Search:** Built-in zero-config web search with DuckDuckGo, as well as webpage fetch
+- **Bash tools:** Support for bash commands with user approval or YOLO mode
 - **MCP Support:** Full Model Context Protocol (MCP) tool integration with per-tool toggling.
 - **Bells and whistles:** All the pretty things that our eyes like, or that we enjoy when bored
 
 ## Requirements
 - `curl`
 - That's it, you probably already have them
-
-## Roadmap
-
-- Multiple formats attachment (txt, pdf etc..)
-- erm... I'll think about it along the way
-- Ok fine, agentic capabilities with bash support
 
 ## ❤️ Gratitude
 Thanks to the following tools developing this project is possible:
