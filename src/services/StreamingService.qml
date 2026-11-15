@@ -29,6 +29,10 @@ Item {
     signal streamContentUpdated(string streamId, string delta)
     signal streamThinkingUpdated(string streamId, string delta)
     signal streamActivity(string streamId)
+    // A tool call still being streamed: friendly name + argument chars so
+    // far. Lets the chat show "Writing Shell… 1,234 chars" instead of
+    // looking frozen while a big heredoc arrives.
+    signal streamToolDraft(string streamId, string name, int chars)
     // Fired once data actually arrives; the coordinator disarms its
     // never-responded watchdog so silent reasoning cannot kill a live turn.
     // Live stats + estimated usage (~2/s).
@@ -57,6 +61,12 @@ Item {
     property var _allToolCalls: []
     property var _toolResults: []
     property var _toolAcc: ({})            // per-round parse accumulator
+    // Tool-call draft reported to the UI (name + argument chars so far).
+    // Last token/thinking delta: a long silence is reported as
+    // "waiting…" instead of a tok/s that keeps dropping.
+    property real _lastDeltaMs: 0
+    property string _draftName: ""
+    property int _draftChars: -1
     property var _conversationMessages: [] // neutral payload messages
     // Offset into _content where the current tool round's text starts
     // (_content accumulates across rounds for display; each round's
@@ -99,6 +109,9 @@ Item {
         _toolAcc = {};
         _conversationMessages = [];
         _roundStart = 0;
+        _draftName = "";
+        _draftChars = -1;
+        _lastDeltaMs = 0;
         _usage = null;
         _pendingCallId = -1;
         _pendingToolCallMeta = null;
@@ -180,6 +193,7 @@ Item {
     function _contentDelta(id, text) {
         if (!text) return;
         if (_genStartMs === 0) _genStartMs = Date.now();
+        _lastDeltaMs = Date.now();
         _deltaCount++;
         _content += text;
         streamContentUpdated(id, text);
@@ -188,6 +202,7 @@ Item {
     function _thinkingDelta(id, text) {
         if (!text) return;
         if (_genStartMs === 0) _genStartMs = Date.now();
+        _lastDeltaMs = Date.now();
         _deltaCount++;
         _thinking += text;
         streamThinkingUpdated(id, text);
@@ -227,6 +242,15 @@ Item {
                     input: d.inputTokens > 0 ? d.inputTokens : prev.input,
                     output: d.outputTokens > 0 ? d.outputTokens : prev.output
                 };
+            }
+
+            // Live draft of the call being written (openai/anthropic
+            // fragment the arguments; gemini/ollama send them complete).
+            var draft = StreamParser.toolDraft(root.format, _toolAcc);
+            if (draft && (draft.name !== _draftName || draft.chars !== _draftChars)) {
+                _draftName = draft.name;
+                _draftChars = draft.chars;
+                streamToolDraft(activeStreamId, draft.name, draft.chars);
             }
 
             if (d.toolCalls && d.toolCalls.length > 0) {
@@ -452,10 +476,31 @@ Item {
         streamToolRoundReady(activeStreamId, updated);
     }
 
+    // "45s" / "2m05s" — the silence counter next to a stalled label.
+    function _silenceText(ms) {
+        var s = Math.max(0, Math.round(ms / 1000));
+        if (s < 60) return s + "s";
+        return Math.floor(s / 60) + "m" + ("0" + (s % 60)).slice(-2) + "s";
+    }
+
     function _stats() {
         var seconds = _genSeconds();
         if (seconds <= 0) return "";
         var label = seconds.toFixed(1) + "s";
+        // A silent provider during a tool-enabled turn is composing the
+        // tool call (Ollama delivers it complete, so nothing streams while
+        // it assembles the JSON). The counter next to the label keeps
+        // moving, so it reads as progress rather than a freeze; past two
+        // minutes it is honest about having no response at all.
+        if (_lastDeltaMs > 0) {
+            var silent = Date.now() - _lastDeltaMs;
+            if (silent > 120000)
+                return label + " \u00b7 no response for " + _silenceText(silent);
+            if (silent > 2500)
+                return label + (mcpService
+                    ? " \u00b7 writing tool call\u2026 " + _silenceText(silent)
+                    : " \u00b7 waiting for the model\u2026 " + _silenceText(silent));
+        }
         var tokens = _apiTokens > 0 ? _apiTokens : _deltaCount;
         if (tokens > 0 && seconds > 0.5)
             label += " \u00b7 " + (_apiTokens > 0 ? "" : "~") +

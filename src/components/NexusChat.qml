@@ -680,9 +680,7 @@ Item {
     BubbleTip {
         id: shellTip
         parent: shellChip
-        tipText: shellChip.yolo
-                 ? "YOLO mode is on — every command runs without asking"
-                 : "Enable bash access"
+        tipText: shellChip.yolo ? "YOLO mode is on" : "Enable bash access"
     }
 
     // Settings view: fills the panel, on top of the chat, opened from

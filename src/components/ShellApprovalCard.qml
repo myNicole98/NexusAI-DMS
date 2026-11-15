@@ -18,16 +18,14 @@ Item {
     readonly property var approval: service ? service.pendingApproval : null
     readonly property bool active: approval !== null && approval !== undefined
     readonly property string kind: active ? String(approval.kind || "") : ""
-    readonly property bool isPath: kind === "path" || kind === "cwd"
     readonly property string command: active ? String(approval.command || "") : ""
-    readonly property string folder: active ? String(approval.folder || "") : ""
-    readonly property string question: {
-        if (!active) return "";
-        if (kind === "cwd") return "Work in " + folder + "?";
-        if (kind === "path")
-            return "Read " + (approval.paths && approval.paths.length > 0
-                              ? approval.paths[0] : folder) + "?";
-        return "Run this command?";
+    readonly property string question: active ? "Run this command?" : ""
+    // Lines beyond the four the preview shows (the card must stay small:
+    // a heredoc can be a whole file).
+    readonly property int hiddenLines: {
+        if (!active) return 0;
+        var lines = String(approval.command || "").split("\n").length;
+        return lines > 4 ? lines - 4 : 0;
     }
 
     implicitHeight: active ? card.implicitHeight : 0
@@ -75,7 +73,7 @@ Item {
                 spacing: 6
 
                 DankIcon {
-                    name: root.isPath ? "folder_open" : "terminal"
+                    name: "terminal"
                     size: 14
                     color: Theme.primary
                 }
@@ -91,22 +89,45 @@ Item {
 
             Rectangle {
                 Layout.fillWidth: true
-                implicitHeight: commandText.implicitHeight + 10
+                implicitHeight: commandText.implicitHeight
+                                + (moreLines.visible ? moreLines.implicitHeight : 0)
+                                + 10
                 radius: 6
                 color: Theme.withAlpha(Theme.surfaceContainerLowest, 0.5)
 
+                // A long command (heredocs, whole files) must never push
+                // the buttons off-screen: show a bounded preview and say
+                // how much is hidden.
                 Text {
                     id: commandText
                     anchors.left: parent.left
                     anchors.right: parent.right
-                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.top: parent.top
                     anchors.leftMargin: 8
                     anchors.rightMargin: 8
+                    anchors.topMargin: 5
                     text: "$ " + root.command
                     color: Theme.surfaceText
                     font.family: Theme.monoFontFamily
                     font.pixelSize: 11
-                    elide: Text.ElideMiddle
+                    wrapMode: Text.WrapAnywhere
+                    maximumLineCount: 4
+                    elide: Text.ElideRight
+                }
+
+                Text {
+                    id: moreLines
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: commandText.bottom
+                    anchors.leftMargin: 8
+                    anchors.rightMargin: 8
+                    anchors.topMargin: 2
+                    visible: root.hiddenLines > 0
+                    text: "… " + root.hiddenLines + " more line"
+                          + (root.hiddenLines === 1 ? "" : "s")
+                    color: Theme.surfaceVariantText
+                    font.pixelSize: 10
                 }
             }
 
@@ -117,16 +138,9 @@ Item {
                 Item { Layout.fillWidth: true }
 
                 Action {
-                    text: root.isPath ? "Allow once" : "Approve"
+                    text: "Approve"
                     onTapped: if (root.service)
                         root.service.answerShellApproval("allow-once")
-                }
-
-                Action {
-                    visible: root.isPath
-                    text: "Allow " + root.folder
-                    onTapped: if (root.service)
-                        root.service.answerShellApproval("allow-folder", root.folder)
                 }
 
                 Action {

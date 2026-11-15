@@ -139,7 +139,6 @@ Item {
     // are only the grants the user has made.
     property bool shellEnabled: false
     property bool shellYoloEnabled: false
-    property var shellAllowedDirs: []
     // {callId, kind, command, cwd, paths, folder} while the user is
     // being asked; null otherwise.
     property var pendingApproval: null
@@ -238,7 +237,6 @@ Item {
         screenshotEnabled = PluginService.loadPluginData(pluginId, "screenshotEnabled", true) === true;
         shellEnabled = PluginService.loadPluginData(pluginId, "shellEnabled", false) === true;
         shellYoloEnabled = PluginService.loadPluginData(pluginId, "shellYoloEnabled", false) === true;
-        shellAllowedDirs = _stringArray(PluginService.loadPluginData(pluginId, "shellAllowedDirs", []));
         historyEnabled = PluginService.loadPluginData(pluginId, "historyEnabled", false) === true;
         chats = ChatHistory.normalizeStore(PluginService.loadPluginData(pluginId, "chats", "[]"));
         _chatCounter = 0;
@@ -1168,22 +1166,9 @@ Item {
 
     // ── Shell tool policy / approval ─────────────────────────────
 
-    function _stringArray(v) {
-        if (!Array.isArray(v)) return [];
-        var out = [];
-        for (var i = 0; i < v.length; i++) {
-            var s = String(v[i] || "").trim();
-            if (s && out.indexOf(s) < 0) out.push(s);
-        }
-        return out;
-    }
-
-    // The policy snapshot handed to ShellTools.analyze. Never build one
-    // in QML: the shape is the lib's contract.
+    // The policy snapshot handed to ShellTools.analyze: YOLO or ask.
     function shellPolicy() {
         return { yolo: shellYoloEnabled === true,
-                 allowedCommands: [],   // app grants none; ShellTools supports them
-                 allowedDirs: shellAllowedDirs.slice(),
                  home: Quickshell.env("HOME") || "/" };
     }
 
@@ -1201,36 +1186,13 @@ Item {
         saveSetting("shellYoloEnabled", v);
     }
 
-    function addShellAllowedDir(dir) {
-        var d = String(dir || "").trim().replace(/\/+$/, "") || "/";
-        if (!d || d.charAt(0) !== "/") return;
-        if (shellAllowedDirs.indexOf(d) >= 0) return;
-        shellAllowedDirs = shellAllowedDirs.concat([d]);
-        saveSetting("shellAllowedDirs", shellAllowedDirs);
-    }
-
-    function removeShellAllowedDir(dir) {
-        var i = shellAllowedDirs.indexOf(String(dir || ""));
-        if (i < 0) return;
-        var next = shellAllowedDirs.slice();
-        next.splice(i, 1);
-        shellAllowedDirs = next;
-        saveSetting("shellAllowedDirs", next);
-    }
-
-    // Called by the approval card. Grants are persisted BEFORE the
-    // decision reaches the service, and the fresh policy rides along so
-    // the command is re-checked against it (a second path still asks).
-    function answerShellApproval(action, folder) {
+    // Called by the approval card: one command, one decision.
+    function answerShellApproval(action) {
         var req = pendingApproval;
         if (!req) return;
-        var act = String(action || "deny");
-        if (act === "allow-folder")
-            addShellAllowedDir(String(folder || req.folder));
         pendingApproval = null;
         nativeTools.answerApproval(req.callId,
-            { action: act, folder: String(folder || req.folder || ""),
-              policy: shellPolicy() });
+            { action: String(action || "deny") });
     }
 
     function _abortNativeTools() {
@@ -1872,6 +1834,9 @@ Item {
 
     // Tool call log: one entry per call, running → ok | error.
     // toolLog is a JSON string (ListModel role limitation).
+    // `draft` entries are the live "writing…" state of a call whose
+    // arguments are still streaming; the real dispatch upgrades the same
+    // entry instead of adding a second chip.
     function _appendToolLog(id, toolName, phase, detail) {
         var i = _indexOfId(id);
         if (i < 0) return;
@@ -1882,7 +1847,40 @@ Item {
         if (!Array.isArray(log)) log = [];
         var next = log.slice();
         var name = String(toolName || "");
+        var lastIdx = next.length - 1;
+        var last = lastIdx >= 0 ? next[lastIdx] : null;
+
+        if (phase === "draft") {
+            var chars = parseInt(detail, 10);
+            if (!isFinite(chars)) chars = 0;
+            if (last && last.draft === true && last.name === name) {
+                last.chars = chars;
+                messagesModel.setProperty(i, "toolLog", JSON.stringify(next));
+                return;
+            }
+            // First draft of this round: chip in the flow, live entry.
+            _flowClose();
+            _flow.push({ t: "c", i: next.length });
+            _flowPhase = "none";
+            _flowDirty = true;
+            _flushStreamBuffer();
+            next.push({ name: name, state: "running", draft: true, chars: chars,
+                        detail: "", startMs: Date.now(), endMs: 0,
+                        thinkingAt: messagesModel.get(i).thinking.length });
+            messagesModel.setProperty(i, "toolLog", JSON.stringify(next));
+            return;
+        }
+
         if (phase === "call") {
+            // Upgrade the draft chip in place — the call the user watched
+            // being written IS this call.
+            if (last && last.draft === true && last.name === name) {
+                last.draft = false;
+                last.chars = 0;
+                last.startMs = Date.now();
+                messagesModel.setProperty(i, "toolLog", JSON.stringify(next));
+                return;
+            }
             // Flow: close the current phase and record the chip; the
             // next delta opens a fresh phase (tool rounds relaunch).
             _flowClose();
@@ -1919,6 +1917,27 @@ Item {
             if (idx >= 0) next[idx] = entry;
             else next.push(entry);
         }
+        messagesModel.setProperty(i, "toolLog", JSON.stringify(next));
+    }
+
+    // A draft chip whose call never got dispatched (the provider dropped
+    // the tool call, or the stream died mid-argument) must not stay in
+    // the flow breathing forever. Called from every turn-ending path.
+    function _dropDraftToolLog(id) {
+        var i = _indexOfId(id);
+        if (i < 0) return;
+        var raw = messagesModel.get(i).toolLog;
+        var log;
+        try { log = raw ? JSON.parse(raw) : []; }
+        catch (e) { return; }
+        if (!Array.isArray(log) || log.length === 0) return;
+        var next = [];
+        var changed = false;
+        for (var k = 0; k < log.length; k++) {
+            if (log[k] && log[k].draft === true) { changed = true; continue; }
+            next.push(log[k]);
+        }
+        if (!changed) return;
         messagesModel.setProperty(i, "toolLog", JSON.stringify(next));
     }
 
@@ -2067,11 +2086,6 @@ Item {
             onApprovalNeeded = function (callId, request) {
                 root.pendingApproval = request;
             };
-            // Grants are persisted here (single source of truth) and the
-            // updated policy is handed back by answerShellApproval().
-            onPolicyGranted = function (kind, value) {
-                if (kind === "folder") root.addShellAllowedDir(value);
-            };
         }
     }
 
@@ -2082,6 +2096,8 @@ Item {
         onStreamContentUpdated: (streamId, delta) => root._appendContent(streamId, delta)
         onStreamThinkingUpdated: (streamId, delta) => root._appendThinking(streamId, delta)
         onStreamActivity: (streamId) => root._stopWatchdog()
+        onStreamToolDraft: (streamId, name, chars) =>
+            root._appendToolLog(streamId, name, "draft", String(chars))
         onStreamToolRoundReady: (streamId, messages) => root._launch(streamId, messages)
         onToolActivity: (streamId, toolName, phase, detail) =>
             root._appendToolLog(streamId, toolName, phase, detail)
@@ -2100,6 +2116,7 @@ Item {
         onStreamFinalized: (streamId, stats, usage) => {
             root._stopWatchdog();
             root.streamingStats = "";
+            root._dropDraftToolLog(streamId);
             root._flowClose();
             root._flushStreamBuffer();
             root._setMsg(streamId, {
@@ -2114,6 +2131,7 @@ Item {
         onStreamError: (streamId, message) => {
             root._stopWatchdog();
             root.streamingStats = "";
+            root._dropDraftToolLog(streamId);
             root._clearStreamBuffer();
             root._setMsg(streamId, { state: "error", content: message, stats: "" });
             root._onTurnFinished();
@@ -2122,6 +2140,7 @@ Item {
         onStreamCancelled: (streamId, stats) => {
             root._stopWatchdog();
             root.streamingStats = "";
+            root._dropDraftToolLog(streamId);
             // Cancelled keeps the partial content — flush it.
             root._flowClose();
             root._flushStreamBuffer();

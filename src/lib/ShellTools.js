@@ -1,13 +1,16 @@
 .pragma library
 
-// Native shell tool (`run_command`): permission policy + execution
-// helpers. Pure JS — NativeToolsService.qml is transport only. Every
-// decision about whether a command may run lives in `analyze`, so the
-// tokenizer, allowlist, path scoping and result formatting are
-// unit-tested without touching a shell.
+// Native shell tool (`run_command`): argument validation, execution argv
+// and result formatting.
 //
-// Never log with nested parens — the test harness strips console.*
-// naively.
+// The permission model is deliberately binary: a command either runs
+// because YOLO mode is on, or the user approves it — one card, one
+// decision, no persisted grants and no folder scoping. That keeps the
+// policy honest (the user sees every command before it runs) and leaves
+// no fuzzy heuristics to get wrong.
+//
+// NativeToolsService.qml is the transport. Never log with nested
+// parens — the test harness strips console.* naively.
 
 var DEFAULT_TIMEOUT = 30;
 var MIN_TIMEOUT = 5;
@@ -18,61 +21,6 @@ var MAX_OUTPUT_BYTES = 256 * 1024;
 var MAX_MODEL_CHARS = 24000;
 var MODEL_HEAD_CHARS = 16000;
 
-// Commands that are read-only on their own. Deliberately small; every
-// entry is a promise, and the per-command tables below are what keep
-// that promise. `env`, `command`, `exec`, `xargs`, `nice`, `time`,
-// `nohup`, `sed`, `awk`, `xxd`, `od`, `hexdump` are excluded on
-// purpose: each is a documented bypass (see the design doc).
-var BUILTIN_COMMANDS = [
-    "pwd", "ls", "cat", "head", "tail", "wc", "grep", "rg", "find",
-    "file", "stat", "du", "df", "free", "uname", "whoami", "id", "date",
-    "echo", "printf", "which", "whereis", "type", "jq", "sort", "uniq",
-    "cut", "tr", "diff", "cmp", "tree", "ps", "pgrep", "lsblk", "lsusb",
-    "lscpu", "nproc", "uptime", "hostname", "realpath", "readlink",
-    "basename", "dirname", "md5sum", "sha256sum", "git", "systemctl"
-];
-
-// Flags that write or execute. A hit demotes the whole command to
-// "needs approval" — the word being read-only is not enough.
-var WRITE_FLAGS = {
-    "find": ["-exec", "-execdir", "-ok", "-okdir", "-delete",
-             "-fprint", "-fprint0", "-fprintf", "-fls"],
-    "sort": ["-o", "--output", "--compress-program"],
-    "tree": ["-o"],
-    "git": ["--output"]
-};
-
-// Words that are allowed only with a read-only subcommand.
-var SUBCOMMANDS = {
-    "git": ["status", "log", "diff", "show", "blame", "describe",
-            "rev-parse", "ls-files", "shortlog"],
-    "systemctl": ["status", "is-active", "is-enabled", "list-units", "show"]
-};
-
-// Flags whose value is data, not a path (so the value is not checked
-// against the allowed folders). Unknown flags do NOT consume their
-// value, so an unrecognized `-foo bar` treats `bar` as a path — the
-// safe direction. `grep -f` is intentionally absent: its value is a
-// file of patterns, i.e. a real read.
-var FLAG_VALUES = {
-    "find": ["-name", "-iname", "-path", "-ipath", "-type", "-maxdepth",
-             "-mindepth", "-newer", "-size"],
-    "head": ["-n", "-c"],
-    "tail": ["-n", "-c"],
-    "grep": ["-m", "-A", "-B", "-C", "-e", "--include", "--exclude"],
-    "rg": ["-m", "-A", "-B", "-C", "-e", "-g", "-t", "--glob", "--type"],
-    "du": ["-d", "--max-depth", "-B"],
-    "sort": ["-k", "-t"],
-    "cut": ["-d", "-f"],
-    "stat": ["-c", "--format"],
-    "tree": ["-L", "-P", "-I"],
-    "diff": ["-U", "--unified"],
-    "ls": ["--color", "--time-style", "-I", "-w"]
-};
-
-// Words whose first non-flag token is a pattern, not a path.
-var PATTERN_WORDS = ["grep", "rg"];
-
 function isNativeTool(name) {
     return name === "run_command";
 }
@@ -82,11 +30,9 @@ function toolDefs(enabledNames) {
         type: "function",
         function: {
             name: "run_command",
-            description: "Run a shell command on the user's machine. " +
-                "Read-only commands (ls, cat, grep, git status, …) may run " +
-                "immediately when they stay inside folders the user has " +
-                "allowed; anything else asks the user for permission first, " +
-                "and a denial comes back as an error. Pass cwd to work in a " +
+            description: "Run a shell command on the user's machine. The " +
+                "user sees every command and decides whether it runs, " +
+                "unless they enabled YOLO mode. Pass cwd to work in a " +
                 "specific directory. Output is stdout+stderr with the exit " +
                 "code. No stdin: interactive commands will not work.",
             parameters: {
@@ -137,251 +83,22 @@ function validateArgs(args) {
     return { ok: true, args: { command: cmd, cwd: cwd, timeoutSeconds: t } };
 }
 
-// ── Tokenizing ────────────────────────────────────────────────────
-
-// Quote-aware split on the command separators (|, ||, &&, ;). Quotes
-// survive into the segments so tokenize() can see the grouping; a lone
-// `&` is not a separator and stays in the segment (hasForbiddenMeta
-// rejects it).
-function splitSegments(command) {
-    var s = String(command || "");
-    var out = [];
-    var cur = "";
-    var quote = "";
-    for (var i = 0; i < s.length; i++) {
-        var ch = s.charAt(i);
-        if (quote) {
-            cur += ch;
-            if (ch === quote) quote = "";
-            continue;
-        }
-        if (ch === "'" || ch === '"') {
-            quote = ch;
-            cur += ch;
-            continue;
-        }
-        if (ch === ";") {
-            out.push(cur);
-            cur = "";
-            continue;
-        }
-        if (ch === "|") {
-            if (s.charAt(i + 1) === "|") i++;
-            out.push(cur);
-            cur = "";
-            continue;
-        }
-        if (ch === "&" && s.charAt(i + 1) === "&") {
-            i++;
-            out.push(cur);
-            cur = "";
-            continue;
-        }
-        cur += ch;
-    }
-    out.push(cur);
-    var cleaned = [];
-    for (var j = 0; j < out.length; j++) {
-        var t = out[j].trim();
-        if (t) cleaned.push(t);
-    }
-    return cleaned;
-}
-
-// Same splitter, keeping the quoted text but dropping the quote marks —
-// what the policy checks need to see.
-function tokenize(segment) {
-    var s = String(segment || "");
-    var out = [];
-    var cur = "";
-    var quote = "";
-    var has = false;
-    for (var i = 0; i < s.length; i++) {
-        var ch = s.charAt(i);
-        if (quote) {
-            if (ch === quote) { quote = ""; continue; }
-            cur += ch;
-            has = true;
-            continue;
-        }
-        if (ch === "'" || ch === '"') { quote = ch; has = true; continue; }
-        if (ch === " " || ch === "\t") {
-            if (has) { out.push(cur); cur = ""; has = false; }
-            continue;
-        }
-        cur += ch;
-        has = true;
-    }
-    if (has) out.push(cur);
-    return out;
-}
-
-// Everything the fast path refuses to reason about. A single `&`
-// backgrounds; `&&` is a separator and is removed first. Globs are
-// allowed (they only widen a read).
-function hasForbiddenMeta(command) {
-    var s = String(command || "");
-    if (/[$`><(){}\\\n\r]/.test(s)) return true;
-    return s.replace(/&&/g, "").indexOf("&") >= 0;
-}
-
-// ── Paths ─────────────────────────────────────────────────────────
-
-// " FULL " style cleanups are unnecessary here: callers pass tokens.
-function normalizePath(raw, cwd, home) {
-    var s = String(raw || "").trim();
-    var first = s.charAt(0);
-    var last = s.charAt(s.length - 1);
-    if (s.length > 1 && (first === "'" || first === '"') && last === first)
-        s = s.substring(1, s.length - 1);
-    if (s === "~") s = home || "~";
-    else if (s.indexOf("~/") === 0) s = (home || "~") + s.substring(1);
-    if (s.charAt(0) !== "/") {
-        var base = String(cwd || "");
-        s = base ? base + "/" + s : s;
-    }
-    var parts = s.split("/");
-    var out = [];
-    for (var i = 0; i < parts.length; i++) {
-        var seg = parts[i];
-        if (seg === "" || seg === ".") continue;
-        if (seg === "..") {
-            if (out.length > 0) out.pop();
-            continue;
-        }
-        out.push(seg);
-    }
-    return "/" + out.join("/");
-}
-
-// Containment: equal to a root, or under it. "/tmpfoo" is NOT inside
-// "/tmp"; "/" contains everything.
-function pathAllowed(path, roots) {
-    var p = String(path || "");
-    if (!Array.isArray(roots)) return false;
-    for (var i = 0; i < roots.length; i++) {
-        var r = String(roots[i] || "").trim();
-        if (!r) continue;
-        r = r.replace(/\/+$/, "");
-        if (r === "") r = "/";
-        if (r === "/") return true;
-        if (p === r || p.indexOf(r + "/") === 0) return true;
-    }
-    return false;
-}
-
-// ── Policy ────────────────────────────────────────────────────────
-
-function _commandResult(kind, offending, folder) {
-    return { verdict: "command", kind: kind, offendingPaths: offending || [],
-             folder: folder || "" };
-}
-
-function _autoResult() {
-    return { verdict: "auto", kind: null, offendingPaths: [], folder: "" };
-}
-
-// Flags that write/execute on an otherwise read-only word.
-function writeFlagHit(word, tokens) {
-    var flags = WRITE_FLAGS[word] || [];
-    for (var i = 1; i < tokens.length; i++) {
-        var t = tokens[i];
-        for (var f = 0; f < flags.length; f++) {
-            if (t === flags[f] || t.indexOf(flags[f] + "=") === 0) return t;
-        }
-    }
-    return "";
-}
-
-function firstNonFlag(tokens) {
-    for (var i = 1; i < tokens.length; i++)
-        if (tokens[i].charAt(0) !== "-") return tokens[i];
-    return "";
-}
-
-// Path-shaped words in one segment, skipping flags and the values of
-// flags that carry data.
-function pathCandidates(word, tokens) {
-    var out = [];
-    var values = FLAG_VALUES[word] || [];
-    var patternWord = PATTERN_WORDS.indexOf(word) >= 0;
-    var sawNonFlag = false;
-    for (var i = 1; i < tokens.length; i++) {
-        var t = tokens[i];
-        if (t.charAt(0) === "-") {
-            if (values.indexOf(t) >= 0 && i + 1 < tokens.length) i++;
-            continue;
-        }
-        if (patternWord && !sawNonFlag) { sawNonFlag = true; continue; }
-        sawNonFlag = true;
-        if (/^-?\d+$/.test(t)) continue;
-        out.push(t);
-    }
-    return out;
-}
-
-// The single decision point. policy: {yolo, allowedCommands,
-// allowedDirs, home}.
+// The single permission decision. "auto" only in YOLO mode; everything
+// else is a one-shot approval for the card. `kind` is always "command"
+// so the service and the card have one shape to render.
 function analyze(command, cwd, policy) {
-    policy = policy || {};
-    if (policy.yolo === true) return _autoResult();
-
-    var home = String(policy.home || "");
-    var dirs = Array.isArray(policy.allowedDirs) ? policy.allowedDirs : [];
-    var userWords = Array.isArray(policy.allowedCommands)
-        ? policy.allowedCommands : [];
-
-    var cmd = String(command || "").trim();
-    if (!cmd) return _commandResult("command");
-    if (hasForbiddenMeta(cmd)) return _commandResult("command");
-
-    var segs = splitSegments(cmd);
-    if (segs.length === 0) return _commandResult("command");
-
-    // The working directory is read too: `ls` with a hostile cwd reads
-    // that directory with no path arguments at all.
-    var cwdPath = normalizePath(cwd || home || "/", "", home);
-    if (!pathAllowed(cwdPath, dirs))
-        return _commandResult("cwd", [cwdPath], cwdPath);
-
-    var offending = [];
-    for (var i = 0; i < segs.length; i++) {
-        var tokens = tokenize(segs[i]);
-        if (tokens.length === 0) continue;
-        var word = tokens[0];
-        // A user-added word is a full grant: no grammar, no path scope.
-        if (userWords.indexOf(word) >= 0) continue;
-        if (BUILTIN_COMMANDS.indexOf(word) < 0)
-            return _commandResult("command");
-        if (writeFlagHit(word, tokens)) return _commandResult("command");
-        if (SUBCOMMANDS[word]) {
-            var sub = firstNonFlag(tokens);
-            if (!sub || SUBCOMMANDS[word].indexOf(sub) < 0)
-                return _commandResult("command");
-        }
-        var cands = pathCandidates(word, tokens);
-        for (var c = 0; c < cands.length; c++) {
-            var p = normalizePath(cands[c], cwdPath, home);
-            if (!pathAllowed(p, dirs) && offending.indexOf(p) < 0)
-                offending.push(p);
-        }
-    }
-
-    if (offending.length > 0)
-        // The grant offered is the path that was denied, not its parent:
-        // a root that is a directory allows its tree, a root that is a
-        // file only matches that file. Deterministic, no stat needed.
-        return _commandResult("path", offending, offending[0]);
-    return _autoResult();
+    var yolo = policy && policy.yolo === true;
+    if (yolo) return { verdict: "auto", kind: null, offendingPaths: [],
+                       folder: "" };
+    return { verdict: "command", kind: "command", offendingPaths: [],
+             folder: "" };
 }
 
-// ── Execution helpers ─────────────────────────────────────────────
-
-// argv only — the command is its own element, never concatenated into
-// a shell string here. `timeout` is the primary killer; the service's
-// job timer is the backstop. `exec 2>&1;` merges stderr into the one
-// stream the collector reads (the command is already a script, so the
-// constant prefix adds no injection surface).
+// argv only — the command is its own element, never concatenated into a
+// shell string here. `timeout` is the primary killer; the service's job
+// timer is the backstop. `exec 2>&1;` merges stderr into the one stream
+// the collector reads (the command is already a script, so the constant
+// prefix adds no injection surface).
 function buildRunArgs(command, cwd, timeoutSeconds) {
     var t = timeoutSeconds > 0 ? Math.floor(timeoutSeconds) : DEFAULT_TIMEOUT;
     return {
@@ -421,12 +138,4 @@ function formatResult(res) {
             + tail;
     }
     return header + output;
-}
-
-// A single-word command prefix, or "" when the input isn't one.
-function cleanCommandWord(word) {
-    var w = String(word || "").trim();
-    if (!w || /\s/.test(w)) return "";
-    if (w.charAt(0) === "-") return "";
-    return w;
 }

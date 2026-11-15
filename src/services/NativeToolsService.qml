@@ -21,10 +21,6 @@ Item {
     // Shell tool: (callId, request) when a command needs the user's
     // permission; the job stays held until answerApproval(callId, …).
     property var onApprovalNeeded: null
-    // Shell tool: (kind, value) when an approval persists a grant
-    // ("command" → first word, "folder" → directory).
-    property var onPolicyGranted: null
-
     property var _queue: []            // {callId, toolName, args, policy}
     property bool _busy: false
     property int _currentId: -1
@@ -41,7 +37,7 @@ Item {
     property int _jobTimeoutMs: 60000
 
     // ── Shell (run_command) state ─────────────────────────────────
-    property var _policy: null          // {yolo, allowedCommands, allowedDirs, home}
+    property var _policy: null          // {yolo, home}
     property var _shellMeta: null       // {command, cwd, timeoutSeconds}
     property string _shellKilled: ""    // "" | "cap" | "timeout"
     property real _shellStarted: 0
@@ -53,7 +49,7 @@ Item {
     property bool _awaitingApproval: false
     property var _approvalRequest: null
     // A held permission request must not outlive the user's patience.
-    readonly property int _approvalTimeoutMs: 60000
+    readonly property int _approvalTimeoutMs: 180000
 
     function execute(callId, toolName, argsJson, policy) {
         _queue.push({ callId: callId, toolName: String(toolName || ""),
@@ -133,8 +129,6 @@ Item {
             kind: verdict.kind,
             command: _shellMeta.command,
             cwd: _shellMeta.cwd,
-            paths: verdict.offendingPaths || [],
-            folder: verdict.folder || "",
             timeoutSeconds: _shellMeta.timeoutSeconds
         };
         approvalTimer.start();
@@ -144,39 +138,21 @@ Item {
         }
     }
 
-    // decision: {action:"allow-once"|"always-allow"|"allow-folder"|"deny",
-    //            folder?, policy?} — policy is the updated grant set, sent
-    // by NexusService after it persists the grant, so a command that
-    // touches several paths is re-checked instead of waved through.
+    // decision: {action:"allow-once"|"deny"}. One card, one command,
+    // no persisted grants — anything else is a refusal.
     function answerApproval(callId, decision) {
         if (!_awaitingApproval || !_approvalRequest) return;
         if (String(callId) !== String(_approvalRequest.callId)) return;
         approvalTimer.stop();
         var d = decision || {};
         var action = String(d.action || "deny");
-        var req = _approvalRequest;
         _awaitingApproval = false;
         _approvalRequest = null;
-
-        if (action === "deny") {
+        if (action !== "allow-once") {
             _deliverError("The user denied permission to run this command.");
             return;
         }
-        if (action === "allow-folder") {
-            if (root.onPolicyGranted)
-                root.onPolicyGranted("folder",
-                                     String(d.folder || req.folder));
-        }
-        if (action === "allow-once") { _runShell(); return; }
-
-        // A persisted grant: re-analyze against the updated policy so a
-        // multi-path command still gets its remaining prompt.
-        var policy = d.policy || _policy || {};
-        _policy = policy;
-        var verdict = ShellTools.analyze(_shellMeta.command, _shellMeta.cwd,
-                                        policy);
-        if (verdict.verdict === "auto") { _runShell(); return; }
-        _raiseApproval(verdict);
+        _runShell();
     }
 
     function _runShell() {

@@ -1,14 +1,11 @@
 import QtQuick
-import QtQuick.Controls
 import QtQuick.Layouts
-import Quickshell
 import qs.Common
 import qs.Widgets
-import qs.Modals.FileBrowser
 
-// Shell tool settings: the master switch, the YOLO opt-in and the list
-// of folders reads are allowed in. The policy itself is
-// ShellTools.analyze's; this file only edits what the user has granted.
+// Shell tool settings: the YOLO opt-in only. The tool switch itself is
+// the terminal chip on the chat bar; every command is decided per call
+// on the approval card.
 Item {
     id: root
 
@@ -16,7 +13,6 @@ Item {
 
     implicitHeight: body.implicitHeight
 
-    readonly property var dirs: service ? (service.shellAllowedDirs || []) : []
     readonly property bool yolo: service ? service.shellYoloEnabled : false
 
     // ── Row: toggle ───────────────────────────────────────────────
@@ -97,70 +93,6 @@ Item {
         }
     }
 
-    // ── Row: grant entry with remove ──────────────────────────────
-    component GrantRow : Rectangle {
-        id: grantRow
-
-        property string label: ""
-        property string value: ""
-        signal removed()
-
-        height: 40
-        radius: 8
-        color: Theme.withAlpha(Theme.surfaceContainerHigh, 0.4)
-
-        Rectangle {
-            anchors.fill: parent
-            radius: parent.radius
-            color: Theme.withAlpha(Theme.surfaceContainerHigh, 0.6)
-            opacity: grantHover.hovered ? 1 : 0
-            Behavior on opacity { NumberAnimation { duration: 200 } }
-        }
-
-        Text {
-            anchors.left: parent.left
-            anchors.leftMargin: 12
-            anchors.right: removeBtn.left
-            anchors.rightMargin: 8
-            anchors.verticalCenter: parent.verticalCenter
-            text: grantRow.value
-            color: Theme.surfaceText
-            font.pixelSize: 12
-            font.family: Theme.monoFontFamily
-            elide: Text.ElideMiddle
-        }
-
-        Item {
-            id: removeBtn
-            anchors.right: parent.right
-            anchors.rightMargin: 6
-            anchors.verticalCenter: parent.verticalCenter
-            width: 28
-            height: 28
-
-            DankIcon {
-                anchors.centerIn: parent
-                name: "close"
-                size: 16
-                color: removeHover.hovered ? Theme.error : Theme.surfaceVariantText
-                Behavior on color { ColorAnimation { duration: 150 } }
-            }
-
-            HoverHandler {
-                id: removeHover
-                cursorShape: Qt.PointingHandCursor
-            }
-
-            TapHandler {
-                onTapped: grantRow.removed()
-            }
-        }
-
-        HoverHandler {
-            id: grantHover
-        }
-    }
-
     ColumnLayout {
         id: body
         anchors.left: parent.left
@@ -183,8 +115,8 @@ Item {
             id: yoloRow
             Layout.fillWidth: true
             label: "YOLO mode"
-            description: "Run every command without asking, folders ignored. "
-                         + "Only for a model and a machine you trust."
+            description: "Run every command without asking. Only for a model " +
+                         "and a machine you trust."
             checked: root.yolo
             danger: true
             armed: armTimer.running
@@ -205,79 +137,6 @@ Item {
             id: armTimer
             interval: 4000
             repeat: false
-        }
-
-        // ── Allowed folders ───────────────────────────────────────
-        RowLayout {
-            Layout.fillWidth: true
-            Layout.topMargin: 6
-            Text {
-                text: "Allowed folders"
-                color: Theme.surfaceText
-                font.pixelSize: 13
-            }
-            Item { Layout.fillWidth: true }
-            Text {
-                text: "add"
-                color: folderHover.hovered ? Theme.surfaceText : Theme.primary
-                font.pixelSize: 12
-                HoverHandler {
-                    id: folderHover
-                    cursorShape: Qt.PointingHandCursor
-                }
-                TapHandler {
-                    onTapped: {
-                        folderLoader.active = true;
-                        if (folderLoader.item) folderLoader.item.open();
-                    }
-                }
-            }
-        }
-
-        Text {
-            Layout.fillWidth: true
-            visible: root.dirs.length === 0
-            text: "No folders yet — the first read outside home will ask and "
-                  + "offer to add one."
-            color: Theme.surfaceVariantText
-            font.pixelSize: 11
-            wrapMode: Text.Wrap
-        }
-
-        Repeater {
-            model: root.dirs
-            delegate: GrantRow {
-                required property string modelData
-                Layout.fillWidth: true
-                value: modelData
-                onRemoved: if (root.service)
-                    root.service.removeShellAllowedDir(modelData)
-            }
-        }
-
-    }
-
-    // DMS folder picker (folderMode). Same LazyLoader pattern as the
-    // composer's image picker — never Qt's GTK FileDialog.
-    LazyLoader {
-        id: folderLoader
-        active: false
-
-        FileBrowserSurfaceModal {
-            browserTitle: "Allow reading in this folder"
-            browserIcon: "folder_open"
-            browserType: "nexus_shell"
-            folderMode: true
-            allowStacking: true
-
-            onFileSelected: (path) => {
-                close();
-                var p = String(path).replace(/^file:\/\//, "");
-                try { p = decodeURIComponent(p); }
-                catch (e) { /* keep raw */ }
-                if (root.service) root.service.addShellAllowedDir(p);
-            }
-            onDialogClosed: folderLoader.active = false
         }
     }
 }

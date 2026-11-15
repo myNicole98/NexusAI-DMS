@@ -37,6 +37,34 @@ function parseDelta(jsonPart, format, acc) {
     return parseOpenAiDelta(jsonPart, acc);
 }
 
+// A tool call that is still being streamed: name so far plus how many
+// characters of its arguments have arrived. OpenAI and Anthropic
+// fragment the arguments; Gemini and Ollama deliver calls complete, so
+// they never have a draft. Pure so the UI's "writing…" chip is testable.
+function toolDraft(format, acc) {
+    if (!acc) return null;
+    if (format === "anthropic") {
+        var blocks = acc.anthropicBlocks || {};
+        var idxs = Object.keys(blocks);
+        for (var i = idxs.length - 1; i >= 0; i--) {
+            var b = blocks[idxs[i]];
+            if (b && b.name)
+                return { name: b.name, chars: (b.json || "").length };
+        }
+        return null;
+    }
+    if (format === "openai") {
+        var tools = acc.openaiTools || {};
+        var ids = Object.keys(tools).sort();
+        for (var j = ids.length - 1; j >= 0; j--) {
+            var t = tools[ids[j]];
+            if (t && t.name)
+                return { name: t.name, chars: (t.arguments || "").length };
+        }
+    }
+    return null;
+}
+
 function newDelta() {
     // toolCalls is added only when a provider actually emits calls —
     // consumers treat "absent" as "none".

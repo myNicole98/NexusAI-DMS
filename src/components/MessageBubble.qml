@@ -8,6 +8,7 @@ import qs.Widgets
 import "../lib/Markdown.js" as Markdown
 import "../lib/SyntaxHighlight.js" as SyntaxHighlight
 import "../lib/ModelIcons.js" as ModelIcons
+import "../lib/NativeToolMeta.js" as NativeToolMeta
 
 Rectangle {
     id: bubble
@@ -205,23 +206,13 @@ Rectangle {
             if (!e) continue;
             var live = streaming && i === src.length - 1;
             if (e.t === "k") {
-                var box = { t: "k", a: e.a,
-                            b: live ? bubble.thinking.length : e.b,
-                            ms: e.ms || 0, chips: [], live: live,
-                            srcIdx: i };
-                var j = i + 1;
-                var busy = false;
-                while (j < src.length && src[j] && src[j].t === "c") {
-                    box.chips.push(src[j].i);
-                    var te = bubble.toolLogArr[src[j].i];
-                    if (te && te.state === "running") busy = true;
-                    j++;
-                }
-                // A box whose tool is still executing is NOT done:
-                // stays expanded ("Pondering…") until the call returns.
-                box.busy = busy;
-                out.push(box);
-                i = j - 1;
+                // Tool chips are ALWAYS their own row: a call issued out
+                // of a pondering box renders after it, never inside it.
+                // The turn reads think → tool → think → answer.
+                out.push({ t: "k", a: e.a,
+                           b: live ? bubble.thinking.length : e.b,
+                           ms: e.ms || 0, chips: [], live: live,
+                           srcIdx: i });
             } else if (e.t === "x") {
                 out.push({ t: "x", a: e.a,
                            b: live ? bubble.content.length : e.b,
@@ -1333,8 +1324,19 @@ Rectangle {
                 // second" so the chip never shows 0 seconds.
                 readonly property string chipLabel: {
                     var e = toolEntry.entry;
-                    var name = e && e.name ? " (" + e.name + ")" : "";
-                    if (!e || e.state === "running")
+                    var name = e && e.name
+                        ? " (" + NativeToolMeta.label(e.name) + ")" : "";
+                    if (!e) return "";
+                    if (e.draft === true) {
+                        var n = e.chars || 0;
+                        var shown = n >= 1000
+                            ? (n / 1000).toFixed(1).replace(".0", "") + "k"
+                            : String(n);
+                        var base = "Writing " + NativeToolMeta.label(e.name);
+                        return n > 0 ? base + "\u2026 " + shown + " chars"
+                                     : base + "\u2026";
+                    }
+                    if (e.state === "running")
                         return "Calling Tool" + name;
                     var ms = Math.max(0,
                                       (e.endMs || 0) - (e.startMs || 0));
@@ -1417,7 +1419,7 @@ Rectangle {
                             width: 16; height: 16
                             DankIcon {
                                 anchors.centerIn: parent
-                                name: "handyman"
+                                name: NativeToolMeta.icon(toolEntry.entry ? toolEntry.entry.name : "")
                                 size: 14
                                 color: toolChip.iconColor()
                                 opacity: chipHover.hovered ? 0 : 1
@@ -1473,7 +1475,7 @@ Rectangle {
 
                     Text {
                         Layout.fillWidth: true
-                        text: toolEntry.entry ? toolEntry.entry.name : ""
+                        text: toolEntry.entry ? NativeToolMeta.label(toolEntry.entry.name) : ""
                         color: Theme.surfaceVariantText
                         font.pixelSize: 12
                         font.family: Theme.monoFontFamily
