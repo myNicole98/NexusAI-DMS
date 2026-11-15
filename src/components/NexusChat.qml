@@ -27,6 +27,17 @@ Item {
         }
     }
 
+    // A permission request is time-sensitive (60 s window): never let it
+    // sit behind the settings overlay. Bring the chat forward instead.
+    Connections {
+        target: chat.service
+        function onPendingApprovalChanged() {
+            if (chat.service && chat.service.pendingApproval
+                && chat.state === "settings")
+                chat.state = "chat";
+        }
+    }
+
     // Called by NexusPanel when the panel finishes sliding in.
     function focusInput() {
         if (state === "chat" && composer.focusInput)
@@ -363,6 +374,15 @@ Item {
             }
         }
 
+        // Shell permission card: in the layout flow directly above the
+        // composer — it never covers the conversation, and needs no
+        // z-order fight with the settings overlay. Zero height when idle.
+        ShellApprovalCard {
+            id: shellApprovalCard
+            Layout.fillWidth: true
+            service: chat.service
+        }
+
         ChatComposer {
             id: composer
             Layout.fillWidth: true
@@ -517,6 +537,59 @@ Item {
                 }
             }
 
+            // Native shell tool switch: terminal icon. Its own master
+            // switch (shell access is not part of the web tools) and
+            // error-tinted whenever YOLO mode is on, so a glance at the
+            // bar shows the gate is down.
+            Rectangle {
+                id: shellChip
+                Layout.alignment: Qt.AlignVCenter
+                implicitWidth: 34
+                implicitHeight: 34
+                radius: 8
+                color: Theme.withAlpha(Theme.surfaceContainerHigh, 0.5)
+
+                readonly property bool on: chat.service
+                    ? chat.service.shellEnabled : false
+                readonly property bool yolo: chat.service
+                    ? chat.service.shellYoloEnabled : false
+
+                Rectangle {
+                    anchors.fill: parent
+                    radius: parent.radius
+                    color: Theme.withAlpha(Theme.surfaceContainerHighest, 0.5)
+                    opacity: shellHover.hovered ? 1 : 0
+                    Behavior on opacity { NumberAnimation { duration: 250 } }
+                }
+
+                DankIcon {
+                    anchors.centerIn: parent
+                    name: "terminal"
+                    size: 18
+                    filled: shellChip.on
+                    color: shellChip.yolo
+                           ? Theme.error
+                           : (shellChip.on || shellHover.hovered
+                              ? Theme.primary : Theme.surfaceVariantText)
+                    Behavior on color { ColorAnimation { duration: 250 } }
+                }
+
+                HoverHandler {
+                    id: shellHover
+                    cursorShape: Qt.PointingHandCursor
+                    onHoveredChanged: shellTip.hovering = hovered
+                }
+
+                TapHandler {
+                    onTapped: {
+                        shellTip.close();
+                        if (chat.service)
+                            chat.service.setShellEnabled(
+                                !chat.service.shellEnabled);
+                    }
+                }
+            }
+
             // MCP tools master switch: construction icon, primary when
             // tools are on. Same chip shape and hover treatment as the
             // model selector's zones (overlay fade + pointing cursor).
@@ -602,6 +675,14 @@ Item {
         id: webTip
         parent: webChip
         tipText: "Enable native tools"
+    }
+
+    BubbleTip {
+        id: shellTip
+        parent: shellChip
+        tipText: shellChip.yolo
+                 ? "YOLO mode is on — every command runs without asking"
+                 : "Enable bash access"
     }
 
     // Settings view: fills the panel, on top of the chat, opened from

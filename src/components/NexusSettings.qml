@@ -110,13 +110,17 @@ Item {
                 service: settings.service
             }
 
-            // ── Native tools card (parked) ────────────────────────────
-            // NativeToolsSection {
-            //     Layout.fillWidth: true
-            //     service: settings.service
-            // }
+            // ── Native tools card ─────────────────────────────────────
+            NativeToolsSection {
+                Layout.fillWidth: true
+                service: settings.service
+            }
 
-            // ── MCP card ──────────────────────────────────────────────
+            // ── Shell tool card ───────────────────────────────────────
+            ShellSection {
+                Layout.fillWidth: true
+                service: settings.service
+            }            // ── MCP card ──────────────────────────────────────────────
             MCPSection {
                 id: mcpSection
                 Layout.fillWidth: true

@@ -165,7 +165,7 @@ Item {
         Text {
             Layout.fillWidth: true
             visible: !root.masterOn
-            text: "Native tools are switched off — use the language icon " +
+            text: "Native tools are switched off — use the toolbox icon " +
                   "above the chat input to turn them on."
             color: Theme.surfaceVariantText
             font.pixelSize: 12
@@ -192,6 +192,18 @@ Item {
             onToggled: if (root.service)
                 root.service.setNativeToolEnabled("webfetch",
                                                   !root.service.webFetchEnabled)
+        }
+
+        NativeToolRow {
+            Layout.fillWidth: true
+            label: "Screenshot"
+            description: "Let the model capture the focused window or the " +
+                         "screen to answer questions about what it sees."
+            checked: root.service ? root.service.screenshotEnabled : false
+            rowEnabled: root.masterOn
+            onToggled: if (root.service)
+                root.service.setNativeToolEnabled("take_screenshot",
+                                                  !root.service.screenshotEnabled)
         }
     }
 }

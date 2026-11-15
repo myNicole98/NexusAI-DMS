@@ -359,13 +359,29 @@ Item {
         }
         toolActivity(activeStreamId, toolName, "call", "");
         var callId = mcpService.callTool(toolName, toolArgs);
+        if (callId === -1) {
+            // Unknown or refused (a native tool switched off mid-flight):
+            // a completion can never arrive, so waiting would hang the
+            // round forever. Report it like any other tool failure.
+            var why = "tool \"" + toolName + "\" is not available.";
+            toolActivity(activeStreamId, toolName, "error", why);
+            _toolResults.push({ role: "tool",
+                                tool_call_id: call.id || toolName,
+                                name: toolName,
+                                content: "Error: " + why });
+            _executeNextToolCall();
+            return;
+        }
         _toolExecActive = true;
         _pendingCallId = callId;
         _pendingToolCallMeta = { id: call.id || ("call_" + callId), name: toolName };
     }
 
     function _onToolCallCompleted(callId, result, images) {
-        if (callId !== _pendingCallId) return;
+        // No pending meta means this completion belongs to a round that is
+        // already gone (refused/cancelled) — the -1 sentinel must never let
+        // it inject a result into a newer turn.
+        if (callId !== _pendingCallId || !_pendingToolCallMeta) return;
         _pendingCallId = -1;
         _toolExecActive = false;
         var meta = _pendingToolCallMeta;
@@ -392,7 +408,7 @@ Item {
     }
 
     function _onToolCallFailed(callId, error) {
-        if (callId !== _pendingCallId) return;
+        if (callId !== _pendingCallId || !_pendingToolCallMeta) return;
         _pendingCallId = -1;
         _toolExecActive = false;
         var meta = _pendingToolCallMeta;

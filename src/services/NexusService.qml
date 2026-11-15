@@ -9,6 +9,7 @@ import "../lib/ModelIcons.js" as ModelIcons
 import "../lib/PromptPresets.js" as PromptPresets
 import "../lib/McpTools.js" as McpTools
 import "../lib/WebTools.js" as WebTools
+import "../lib/ShellTools.js" as ShellTools
 import "../lib/ContextWindows.js" as ContextWindows
 import "../lib/ChatHistory.js" as ChatHistory
 
@@ -132,6 +133,17 @@ Item {
     // for it, and it is the whole point of the tool.
     property bool screenshotEnabled: true
 
+    // ── Shell tool (run_command) ─────────────────────────────────
+    // Off by default: it is the only tool that acts on the machine.
+    // The permission policy itself lives in ShellTools.analyze; these
+    // are only the grants the user has made.
+    property bool shellEnabled: false
+    property bool shellYoloEnabled: false
+    property var shellAllowedDirs: []
+    // {callId, kind, command, cwd, paths, folder} while the user is
+    // being asked; null otherwise.
+    property var pendingApproval: null
+
     property bool modelsRefreshing: false
 
     // Message being edited (memory only); submit regenerates from it.
@@ -224,6 +236,9 @@ Item {
         webSearchEnabled = PluginService.loadPluginData(pluginId, "webSearchEnabled", true) === true;
         webFetchEnabled = PluginService.loadPluginData(pluginId, "webFetchEnabled", true) === true;
         screenshotEnabled = PluginService.loadPluginData(pluginId, "screenshotEnabled", true) === true;
+        shellEnabled = PluginService.loadPluginData(pluginId, "shellEnabled", false) === true;
+        shellYoloEnabled = PluginService.loadPluginData(pluginId, "shellYoloEnabled", false) === true;
+        shellAllowedDirs = _stringArray(PluginService.loadPluginData(pluginId, "shellAllowedDirs", []));
         historyEnabled = PluginService.loadPluginData(pluginId, "historyEnabled", false) === true;
         chats = ChatHistory.normalizeStore(PluginService.loadPluginData(pluginId, "chats", "[]"));
         _chatCounter = 0;
@@ -959,6 +974,10 @@ Item {
             if (screenshotEnabled) enabledNames.push("take_screenshot");
             out = out.concat(WebTools.toolDefs(enabledNames));
         }
+        // Shell access is its own switch, independent of the web tools:
+        // it is the only tool that can change the machine.
+        if (shellEnabled)
+            out = out.concat(ShellTools.toolDefs(["run_command"]));
         return out;
     }
 
@@ -1143,7 +1162,80 @@ Item {
         if (name === "web_search") return webSearchEnabled;
         if (name === "webfetch") return webFetchEnabled;
         if (name === "take_screenshot") return screenshotEnabled;
+        if (name === "run_command") return shellEnabled;
         return false;
+    }
+
+    // ── Shell tool policy / approval ─────────────────────────────
+
+    function _stringArray(v) {
+        if (!Array.isArray(v)) return [];
+        var out = [];
+        for (var i = 0; i < v.length; i++) {
+            var s = String(v[i] || "").trim();
+            if (s && out.indexOf(s) < 0) out.push(s);
+        }
+        return out;
+    }
+
+    // The policy snapshot handed to ShellTools.analyze. Never build one
+    // in QML: the shape is the lib's contract.
+    function shellPolicy() {
+        return { yolo: shellYoloEnabled === true,
+                 allowedCommands: [],   // app grants none; ShellTools supports them
+                 allowedDirs: shellAllowedDirs.slice(),
+                 home: Quickshell.env("HOME") || "/" };
+    }
+
+    function setShellEnabled(enabled) {
+        var v = !!enabled;
+        if (shellEnabled === v) return;
+        shellEnabled = v;
+        saveSetting("shellEnabled", v);
+    }
+
+    function setShellYoloEnabled(enabled) {
+        var v = !!enabled;
+        if (shellYoloEnabled === v) return;
+        shellYoloEnabled = v;
+        saveSetting("shellYoloEnabled", v);
+    }
+
+    function addShellAllowedDir(dir) {
+        var d = String(dir || "").trim().replace(/\/+$/, "") || "/";
+        if (!d || d.charAt(0) !== "/") return;
+        if (shellAllowedDirs.indexOf(d) >= 0) return;
+        shellAllowedDirs = shellAllowedDirs.concat([d]);
+        saveSetting("shellAllowedDirs", shellAllowedDirs);
+    }
+
+    function removeShellAllowedDir(dir) {
+        var i = shellAllowedDirs.indexOf(String(dir || ""));
+        if (i < 0) return;
+        var next = shellAllowedDirs.slice();
+        next.splice(i, 1);
+        shellAllowedDirs = next;
+        saveSetting("shellAllowedDirs", next);
+    }
+
+    // Called by the approval card. Grants are persisted BEFORE the
+    // decision reaches the service, and the fresh policy rides along so
+    // the command is re-checked against it (a second path still asks).
+    function answerShellApproval(action, folder) {
+        var req = pendingApproval;
+        if (!req) return;
+        var act = String(action || "deny");
+        if (act === "allow-folder")
+            addShellAllowedDir(String(folder || req.folder));
+        pendingApproval = null;
+        nativeTools.answerApproval(req.callId,
+            { action: act, folder: String(folder || req.folder || ""),
+              policy: shellPolicy() });
+    }
+
+    function _abortNativeTools() {
+        pendingApproval = null;
+        nativeTools.abortAll();
     }
 
     // Abandon an in-progress edit; the bubble un-fades and the
@@ -1176,10 +1268,12 @@ Item {
     }
 
     function cancelStream() {
+        _abortNativeTools();
         streaming.cancel();
     }
 
     function clearChat() {
+        _abortNativeTools();
         if (isStreaming) streaming.reset();
         editingMessageId = "";
         messagesModel.clear();
@@ -1296,6 +1390,7 @@ Item {
     // and discarded), so just drop the view. Doubles as the clear button
     // when history is off (_saveActiveChat no-ops).
     function newChat() {
+        _abortNativeTools();
         if (isStreaming) streaming.cancel();
         _saveActiveChat();
         editingMessageId = "";
@@ -1315,6 +1410,7 @@ Item {
         // Cancel a live stream first: cancel() emits streamCancelled,
         // whose handler stamps the in-flight row "cancelled" and
         // snapshots the outgoing chat before the swap.
+        _abortNativeTools();
         if (isStreaming) { streaming.cancel(); _saveActiveChat(); }
         else _saveActiveChat();
         activeChatId = clean;
@@ -1844,6 +1940,7 @@ Item {
             if (root.webToolsEnabled
                 && (root.webSearchEnabled || root.webFetchEnabled
                     || root.screenshotEnabled)) return true;
+            if (root.shellEnabled) return true;
             var n = 0;
             for (var k in root.mcpServiceInstances) {
                 var svc = root.mcpServiceInstances[k];
@@ -1858,14 +1955,19 @@ Item {
             return root.getChatTools();
         }
         function callTool(name, args) {
-            if (WebTools.isNativeTool(name)) {
+            if (WebTools.isNativeTool(name) || ShellTools.isNativeTool(name)) {
                 // Defense in depth: a disabled native tool never
                 // reaches the model's tool list, but a stale or
                 // replayed call must not execute either.
                 if (!root.nativeToolEnabled(name)) return -1;
                 _nativeCallCounter++;
-                var nativeId = -_nativeCallCounter;
-                nativeTools.execute(nativeId, name, args);
+                // Start at -2: -1 is StreamingService's "nothing pending"
+                // sentinel AND callTool's "refused" return, so a real id of
+                // -1 would be read as a refusal.
+                var nativeId = -(_nativeCallCounter + 1);
+                nativeTools.execute(nativeId, name, args,
+                                    name === "run_command"
+                                    ? root.shellPolicy() : null);
                 return nativeId;
             }
             for (var i = 0; i < root.mcpServers.length; i++) {
@@ -1957,7 +2059,18 @@ Item {
                 streaming._onToolCallCompleted(callId, text, images);
             };
             onError = function (callId, err) {
+                root.pendingApproval = null;
                 streaming._onToolCallFailed(callId, err);
+            };
+            // The card is driven from this one property; the service
+            // holds the job until answerShellApproval() runs.
+            onApprovalNeeded = function (callId, request) {
+                root.pendingApproval = request;
+            };
+            // Grants are persisted here (single source of truth) and the
+            // updated policy is handed back by answerShellApproval().
+            onPolicyGranted = function (kind, value) {
+                if (kind === "folder") root.addShellAllowedDir(value);
             };
         }
     }

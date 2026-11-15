@@ -1484,8 +1484,10 @@ Rectangle {
                     Flickable {
                         id: toolFlick
                         Layout.fillWidth: true
+                        // At least one line: a one-line detail used to
+                        // collapse to a sliver while the height animated.
                         property real smoothH:
-                            Math.min(toolDetailBody.contentHeight, 260)
+                            Math.max(30, Math.min(toolDetailBody.contentHeight, 260))
                         Behavior on smoothH {
                             NumberAnimation { duration: 150; easing.type: Easing.OutQuad }
                         }

@@ -1,12 +1,14 @@
 import QtQuick
 import Quickshell.Io
 import "../lib/WebTools.js" as WebTools
+import "../lib/ShellTools.js" as ShellTools
 import "../lib/ErrorHints.js" as ErrorHints
 import "../lib/Providers.js" as Providers
 
-  // Native chat tools executor (web_search + webfetch + take_screenshot):
-  // one process at a time, curl config via stdin. All validation/parsing
-  // lives in WebTools.js; this file is transport + delivery only.
+  // Native chat tools executor (web_search + webfetch + take_screenshot +
+  // run_command): one process at a time, curl config via stdin. All
+  // validation, parsing and shell policy live in the JS libs; this file
+  // is transport, approval hold and delivery only.
 Item {
     id: root
 
@@ -16,24 +18,47 @@ Item {
     property var onResult: null
     // Assigned by NexusService: (callId, errorText).
     property var onError: null
+    // Shell tool: (callId, request) when a command needs the user's
+    // permission; the job stays held until answerApproval(callId, …).
+    property var onApprovalNeeded: null
+    // Shell tool: (kind, value) when an approval persists a grant
+    // ("command" → first word, "folder" → directory).
+    property var onPolicyGranted: null
 
-    property var _queue: []            // {callId, toolName, args}
+    property var _queue: []            // {callId, toolName, args, policy}
     property bool _busy: false
     property int _currentId: -1
     property string _currentTool: ""
     property var _currentArgs: null
     property string _stdin: ""
     // Per-job stdout cap: curl downloads keep the 4 MB guard; a screen
-    // capture is a base64 image and gets its own, larger cap.
+    // capture is a base64 image and gets its own, larger cap; shell
+    // output is capped hard (hitting it kills the command).
     property int _maxBytes: 4 * 1024 * 1024
-    // Escape hatch for a hung capture. A normal capture is sub-second;
+    // Escape hatch for a hung job. A normal capture is sub-second;
     // StreamingService.cancel() (Stop) only stops its own stream, so a
     // wedged compositor call would otherwise block the tool loop forever.
-    readonly property int _jobTimeoutMs: 60000
+    property int _jobTimeoutMs: 60000
 
-    function execute(callId, toolName, argsJson) {
+    // ── Shell (run_command) state ─────────────────────────────────
+    property var _policy: null          // {yolo, allowedCommands, allowedDirs, home}
+    property var _shellMeta: null       // {command, cwd, timeoutSeconds}
+    property string _shellKilled: ""    // "" | "cap" | "timeout"
+    property real _shellStarted: 0
+    // StdioCollector.text is replaced per process but keeps the PREVIOUS
+    // job's text when the new process prints nothing — a flag set by the
+    // first chunk is the only honest way to tell "no output" from "stale
+    // output".
+    property bool _shellSawChunk: false
+    property bool _awaitingApproval: false
+    property var _approvalRequest: null
+    // A held permission request must not outlive the user's patience.
+    readonly property int _approvalTimeoutMs: 60000
+
+    function execute(callId, toolName, argsJson, policy) {
         _queue.push({ callId: callId, toolName: String(toolName || ""),
-                      args: Providers.parseToolArgs(argsJson) });
+                      args: Providers.parseToolArgs(argsJson),
+                      policy: policy || null });
         _pump();
     }
 
@@ -48,6 +73,11 @@ Item {
         // delivered against the right callId.
         _currentId = job.callId;
         _currentTool = job.toolName;
+        if (job.toolName === "run_command") {
+            _busy = true;
+            _startShellJob(job);
+            return;
+        }
         var req;
         if (job.toolName === "web_search")
             req = WebTools.buildSearchRequest(job.args);
@@ -68,20 +98,138 @@ Item {
         _stdin = req.config || "";
         _maxBytes = job.toolName === "take_screenshot"
             ? WebTools.MAX_SCREENSHOT_BYTES : 4 * 1024 * 1024;
+        _jobTimeoutMs = job.toolName === "take_screenshot" ? 60000 : 0;
         collector.lastLen = 0;        // re-arm: collector text accumulates
         fetcher.stdinEnabled = _stdin.length > 0;  // re-arm per request
+        fetcher.workingDirectory = "";
         fetcher.command = req.cmd;
         fetcher.running = true;
+        if (_jobTimeoutMs > 0) jobTimer.start();
+    }
+
+    // ── Shell (run_command) ───────────────────────────────────────
+
+    // Validate, then either run (policy says auto), or hold the job and
+    // ask the user. `_busy` is already true: this job owns the service.
+    function _startShellJob(job) {
+        var v = ShellTools.validateArgs(job.args);
+        if (!v.ok) { _deliverError(v.error); return; }
+        var policy = job.policy || {};
+        _policy = policy;
+        var cwd = v.args.cwd || String(policy.home || "/");
+        _shellMeta = { command: v.args.command, cwd: cwd,
+                       timeoutSeconds: v.args.timeoutSeconds };
+        _shellKilled = "";
+        _shellSawChunk = false;
+        var verdict = ShellTools.analyze(v.args.command, cwd, policy);
+        if (verdict.verdict !== "auto") { _raiseApproval(verdict); return; }
+        _runShell();
+    }
+
+    function _raiseApproval(verdict) {
+        _awaitingApproval = true;
+        _approvalRequest = {
+            callId: _currentId,
+            kind: verdict.kind,
+            command: _shellMeta.command,
+            cwd: _shellMeta.cwd,
+            paths: verdict.offendingPaths || [],
+            folder: verdict.folder || "",
+            timeoutSeconds: _shellMeta.timeoutSeconds
+        };
+        approvalTimer.start();
+        if (root.onApprovalNeeded) {
+            try { root.onApprovalNeeded(_currentId, _approvalRequest); }
+            catch (e) { console.warn("NEXUS_NATIVE: onApprovalNeeded threw:", e); }
+        }
+    }
+
+    // decision: {action:"allow-once"|"always-allow"|"allow-folder"|"deny",
+    //            folder?, policy?} — policy is the updated grant set, sent
+    // by NexusService after it persists the grant, so a command that
+    // touches several paths is re-checked instead of waved through.
+    function answerApproval(callId, decision) {
+        if (!_awaitingApproval || !_approvalRequest) return;
+        if (String(callId) !== String(_approvalRequest.callId)) return;
+        approvalTimer.stop();
+        var d = decision || {};
+        var action = String(d.action || "deny");
+        var req = _approvalRequest;
+        _awaitingApproval = false;
+        _approvalRequest = null;
+
+        if (action === "deny") {
+            _deliverError("The user denied permission to run this command.");
+            return;
+        }
+        if (action === "allow-folder") {
+            if (root.onPolicyGranted)
+                root.onPolicyGranted("folder",
+                                     String(d.folder || req.folder));
+        }
+        if (action === "allow-once") { _runShell(); return; }
+
+        // A persisted grant: re-analyze against the updated policy so a
+        // multi-path command still gets its remaining prompt.
+        var policy = d.policy || _policy || {};
+        _policy = policy;
+        var verdict = ShellTools.analyze(_shellMeta.command, _shellMeta.cwd,
+                                        policy);
+        if (verdict.verdict === "auto") { _runShell(); return; }
+        _raiseApproval(verdict);
+    }
+
+    function _runShell() {
+        var m = _shellMeta;
+        if (!m) { _deliverError("Shell job lost its command."); return; }
+        var r = ShellTools.buildRunArgs(m.command, m.cwd, m.timeoutSeconds);
+        _stdin = "";
+        _maxBytes = ShellTools.MAX_OUTPUT_BYTES;
+        // The `timeout` wrapper is the primary killer; this timer is the
+        // backstop for a wedged process.
+        _jobTimeoutMs = (m.timeoutSeconds + 10) * 1000;
+        _shellStarted = Date.now();
+        _shellSawChunk = false;
+        collector.lastLen = 0;
+        fetcher.stdinEnabled = false;
+        fetcher.workingDirectory = r.cwd;
+        fetcher.command = r.cmd;
+        fetcher.running = true;
         jobTimer.start();
+    }
+
+    // Every turn-ending path calls this: Stop, new chat, open chat,
+    // clear chat, tool switched off mid-flight.
+    function abortAll() {
+        _queue = [];
+        approvalTimer.stop();
+        jobTimer.stop();
+        _awaitingApproval = false;
+        _approvalRequest = null;
+        _shellMeta = null;
+        _shellKilled = "";
+        if (fetcher.running) fetcher.running = false;
+        if (_busy) {
+            _busy = false;
+            _currentId = -1;
+            _currentTool = "";
+            _currentArgs = null;
+        }
     }
 
     function _deliverOk(text, images) {
         var id = _currentId;
         jobTimer.stop();
+        approvalTimer.stop();
+        _awaitingApproval = false;
+        _approvalRequest = null;
         _busy = false;
         _currentId = -1;
         _currentTool = "";
         _currentArgs = null;
+        _shellMeta = null;
+        _shellKilled = "";
+        _shellStarted = 0;
         if (root.onResult) {
             try { root.onResult(id, text, images || null); }
             catch (e) { console.warn("NEXUS_NATIVE: onResult threw:", e); }
@@ -92,10 +240,15 @@ Item {
     function _deliverError(message) {
         var id = _currentId;
         jobTimer.stop();
+        approvalTimer.stop();
+        _awaitingApproval = false;
+        _approvalRequest = null;
         _busy = false;
         _currentId = -1;
         _currentTool = "";
         _currentArgs = null;
+        _shellMeta = null;
+        _shellKilled = "";
         if (root.onError) {
             try { root.onError(id, message); }
             catch (e) { console.warn("NEXUS_NATIVE: onError threw:", e); }
@@ -131,6 +284,9 @@ Item {
     function _handleFinished(raw) {
         // The timeout may already have delivered for this call id.
         if (!_busy) return;
+        // Shell output is delivered from onExited, where the exit code is
+        // known — a non-zero exit is data, not an error.
+        if (_currentTool === "run_command") return;
         if (_currentTool === "take_screenshot") {
             _handleScreenshot(raw);
             return;
@@ -186,7 +342,17 @@ Item {
             property int lastLen: 0
 
             onTextChanged: {
+                if (root._currentTool === "run_command" && root._busy)
+                    root._shellSawChunk = true;
                 if (text.length > root._maxBytes) {
+                    if (root._currentTool === "run_command") {
+                        // Keep what we have and let onExited format it as a
+                        // normal result with a "stopped at the cap" marker.
+                        if (root._shellKilled === "")
+                            root._shellKilled = "cap";
+                        fetcher.running = false;
+                        return;
+                    }
                     fetcher.running = false;
                     if (root._busy)
                         root._deliverError(
@@ -204,6 +370,21 @@ Item {
         }
 
         onExited: (exitCode, exitStatus) => {
+            if (root._busy && root._currentTool === "run_command") {
+                var killed = root._shellKilled;
+                if (killed === "" && exitCode === 124) killed = "timeout";
+                var meta = root._shellMeta;
+                root._deliverOk(ShellTools.formatResult({
+                    command: meta ? meta.command : "",
+                    exitCode: exitCode,
+                    output: root._shellSawChunk ? collector.text : "",
+                    ms: root._shellStarted > 0
+                        ? (Date.now() - root._shellStarted) : 0,
+                    killed: killed
+                }));
+                root._pump();
+                return;
+            }
             // onStreamFinished ran first; a still-busy state here means
             // it deliberately deferred (status 0) for this handler.
             if (root._busy) {
@@ -227,18 +408,34 @@ Item {
         }
     }
 
-    // Bounds a capture job that never returns (see _jobTimeoutMs). Any
-    // delivery path stops it; a fire kills the process and reports.
+    // Bounds a job that never returns (see _jobTimeoutMs; 0 = no timer,
+    // the curl requests carry their own --max-time). Any delivery path
+    // stops it; a fire kills the process and reports.
     Timer {
         id: jobTimer
-        interval: root._jobTimeoutMs
+        interval: root._jobTimeoutMs > 0 ? root._jobTimeoutMs : 60000
         repeat: false
         onTriggered: {
             if (!root._busy) return;
             if (fetcher.running) fetcher.running = false;
+            if (root._currentTool === "run_command") {
+                if (root._shellKilled === "") root._shellKilled = "timeout";
+                return;      // onExited formats and delivers
+            }
             root._deliverError(root._currentTool === "take_screenshot"
                 ? "Screenshot capture timed out — the compositor did not answer."
                 : "Request timed out.");
+        }
+    }
+
+    // A held permission request must not hang the tool loop forever.
+    Timer {
+        id: approvalTimer
+        interval: root._approvalTimeoutMs
+        repeat: false
+        onTriggered: {
+            if (!root._awaitingApproval) return;
+            root._deliverError("The permission request timed out.");
         }
     }
 }
