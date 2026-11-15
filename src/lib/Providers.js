@@ -548,6 +548,13 @@ function buildChatRequest(instance, opts) {
             var nm = payload.messages[i];
             if (nm.role === "assistant" && nm.tool_calls
                     && nm.tool_calls.length > 0) {
+                // A new assistant turn closes the previous tool block:
+                // flush its buffered images first, or they would drift
+                // past the next round's tool messages.
+                if (pendingImgs.length > 0) {
+                    omsgs.push(toolImageMessage("ollama", pendingImgs));
+                    pendingImgs = [];
+                }
                 var ocalls = [];
                 for (var oc = 0; oc < nm.tool_calls.length; oc++) {
                     var nfn = nm.tool_calls[oc].function || {};

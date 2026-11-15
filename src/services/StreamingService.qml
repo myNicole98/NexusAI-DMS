@@ -58,6 +58,10 @@ Item {
     property var _toolResults: []
     property var _toolAcc: ({})            // per-round parse accumulator
     property var _conversationMessages: [] // neutral payload messages
+    // Offset into _content where the current tool round's text starts
+    // (_content accumulates across rounds for display; each round's
+    // assistant tool_calls turn carries only its own text).
+    property int _roundStart: 0
     // Token usage reported by the provider ({input, output}), latest
     // wins. Not reset across tool rounds — the last round reports
     // the full conversation position.
@@ -94,6 +98,7 @@ Item {
         _toolResults = [];
         _toolAcc = {};
         _conversationMessages = [];
+        _roundStart = 0;
         _usage = null;
         _pendingCallId = -1;
         _pendingToolCallMeta = null;
@@ -131,6 +136,16 @@ Item {
         isStreaming = false;
         activeStreamId = "";
         fetcher.running = false;
+        // Drop the in-flight tool round: a capture that lands after Stop
+        // must not push its image into a fresh request (the screenshot
+        // would reach the provider after the user asked it to stop).
+        _pendingCallId = -1;
+        _pendingToolCallMeta = null;
+        _pendingToolCalls = [];
+        _allToolCalls = [];
+        _toolResults = [];
+        _toolExecActive = false;
+        _seenToolCalls = false;
         streamCancelled(id, _stats());
     }
 
@@ -141,6 +156,12 @@ Item {
         _lineBuffer = "";
         _pendingStdin = "";
         _queuedReq = null;
+        _pendingCallId = -1;
+        _pendingToolCallMeta = null;
+        _pendingToolCalls = [];
+        _allToolCalls = [];
+        _toolResults = [];
+        _toolExecActive = false;
     }
 
     function _live() {
@@ -392,13 +413,21 @@ Item {
         // Append the assistant tool_calls turn + results, then
         // relaunch. Everything else persists across rounds.
         var updated = _conversationMessages.slice();
+        // Only the text produced in THIS round belongs on its tool_calls
+        // turn — _content accumulates across rounds for display.
+        var roundText = _content.substring(_roundStart);
         updated.push({
             role: "assistant",
-            content: _content || "",
+            content: roundText,
             tool_calls: _allToolCalls.slice()
         });
         for (var i = 0; i < _toolResults.length; i++)
             updated.push(_toolResults[i]);
+        // Keep the memory in step with what was sent. Without this the
+        // next round rebuilds from the pre-turn snapshot and drops the
+        // previous tool block — including any captured screenshot.
+        _conversationMessages = updated.slice();
+        _roundStart = _content.length;
         _toolResults = [];
         _seenToolCalls = false;
         _pendingToolCalls = [];

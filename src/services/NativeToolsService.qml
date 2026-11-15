@@ -53,8 +53,12 @@ Item {
             req = WebTools.buildSearchRequest(job.args);
         else if (job.toolName === "webfetch")
             req = WebTools.buildFetchRequest(job.args);
-        else
+        else if (job.toolName === "take_screenshot")
             req = WebTools.buildScreenshotRequest(job.args);
+        else
+            // Never guess a tool: an unknown name must not silently
+            // become a screen capture.
+            req = { ok: false, error: "Unknown native tool: " + job.toolName };
         if (!req || !req.ok) {
             _deliverError(req && req.error ? req.error : "Unknown native tool");
             return;

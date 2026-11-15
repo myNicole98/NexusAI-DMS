@@ -1,7 +1,7 @@
 .pragma library
 
-// Native (built-in) chat tools: web_search + webfetch. Pure JS;
-// NativeToolsService.qml is the transport. Never log with nested
+// Native (built-in) chat tools: web_search + webfetch + take_screenshot.
+// Pure JS; NativeToolsService.qml is the transport. Never log with nested
 // parens — the test harness strips console.* naively.
 
 // Append trailer for `curl -w` so the collected stdout carries the HTTP
@@ -20,11 +20,13 @@ var MAX_BODY_BYTES = 2 * 1024 * 1024;
 // this string passes. Regression test guards it — don't "modernize".
 var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)";
 
-// Screen capture (take_screenshot): collected-base64 cap, so a busy
-// 4K screen fails on our side instead of being silently dropped by
-// Providers.sanitizeImages' 10 MB image gate. No downscaling — there
-// is no external image dependency; dms's own JPEG encoder bounds it.
-var MAX_SCREENSHOT_BYTES = 14 * 1024 * 1024;
+// Screen capture (take_screenshot): collected-base64 cap. 13 MiB of
+// base64 decodes to 9.75 MiB, so it stays under
+// Providers.sanitizeImages' 10 MiB per-image cap and an oversized
+// capture fails on our side with a readable message instead of being
+// silently dropped. No downscaling — there is no external image
+// dependency; dms's own JPEG encoder bounds the payload.
+var MAX_SCREENSHOT_BYTES = 13 * 1024 * 1024;
 // Whitelist: this value is the only model input that reaches the shell
 // script. Anything else (including the out-of-scope interactive
 // "region" mode) normalizes to the focused window.

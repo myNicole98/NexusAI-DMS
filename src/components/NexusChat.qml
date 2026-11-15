@@ -128,13 +128,15 @@ Item {
 
                 // Web search chip: independent of the MCP count — shows
                 // while the native tools master switch is on (and at
-                // least one native tool is enabled).
+                // least one native tool is enabled — screen capture
+                // counts: it must never be live with no UI indicator).
                 Rectangle {
                     id: webSearchChip
                     readonly property bool nativeOn: chat.service
                         ? chat.service.webToolsEnabled
                           && (chat.service.webSearchEnabled
-                              || chat.service.webFetchEnabled)
+                              || chat.service.webFetchEnabled
+                              || chat.service.screenshotEnabled)
                         : false
                     readonly property bool chatEmpty: chat.service
                         ? chat.service.messageCount === 0 : true
@@ -163,7 +165,7 @@ Item {
 
                         Text {
                             anchors.verticalCenter: parent.verticalCenter
-                            text: "Web Search Enabled"
+                            text: "Native Tools Enabled"
                             color: Theme.surfaceVariantText
                             font.pixelSize: 12
                         }
@@ -597,7 +599,7 @@ Item {
     BubbleTip {
         id: webTip
         parent: webChip
-        tipText: "Enable Web Search"
+        tipText: "Enable native tools (search, fetch, screen capture)"
     }
 
     // Settings view: fills the panel, on top of the chat, opened from
