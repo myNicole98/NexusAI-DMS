@@ -128,6 +128,9 @@ Item {
     // getChatTools / callTool.
     property bool webSearchEnabled: true
     property bool webFetchEnabled: true
+    // Screen capture: on by default — it only runs when the model asks
+    // for it, and it is the whole point of the tool.
+    property bool screenshotEnabled: true
 
     property bool modelsRefreshing: false
 
@@ -220,6 +223,7 @@ Item {
         webToolsEnabled = PluginService.loadPluginData(pluginId, "webToolsEnabled", false) === true;
         webSearchEnabled = PluginService.loadPluginData(pluginId, "webSearchEnabled", true) === true;
         webFetchEnabled = PluginService.loadPluginData(pluginId, "webFetchEnabled", true) === true;
+        screenshotEnabled = PluginService.loadPluginData(pluginId, "screenshotEnabled", true) === true;
         historyEnabled = PluginService.loadPluginData(pluginId, "historyEnabled", false) === true;
         chats = ChatHistory.normalizeStore(PluginService.loadPluginData(pluginId, "chats", "[]"));
         _chatCounter = 0;
@@ -952,6 +956,7 @@ Item {
             var enabledNames = [];
             if (webSearchEnabled) enabledNames.push("web_search");
             if (webFetchEnabled) enabledNames.push("webfetch");
+            if (screenshotEnabled) enabledNames.push("take_screenshot");
             out = out.concat(WebTools.toolDefs(enabledNames));
         }
         return out;
@@ -1127,12 +1132,17 @@ Item {
             if (webFetchEnabled === v) return;
             webFetchEnabled = v;
             saveSetting("webFetchEnabled", v);
+        } else if (name === "take_screenshot") {
+            if (screenshotEnabled === v) return;
+            screenshotEnabled = v;
+            saveSetting("screenshotEnabled", v);
         }
     }
 
     function nativeToolEnabled(name) {
         if (name === "web_search") return webSearchEnabled;
         if (name === "webfetch") return webFetchEnabled;
+        if (name === "take_screenshot") return screenshotEnabled;
         return false;
     }
 
@@ -1832,7 +1842,8 @@ Item {
         // per-tool on) — native execution needs no connection.
         property bool isConnected: {
             if (root.webToolsEnabled
-                && (root.webSearchEnabled || root.webFetchEnabled)) return true;
+                && (root.webSearchEnabled || root.webFetchEnabled
+                    || root.screenshotEnabled)) return true;
             var n = 0;
             for (var k in root.mcpServiceInstances) {
                 var svc = root.mcpServiceInstances[k];
@@ -1942,8 +1953,8 @@ Item {
         // Callback assignment (not declarative bindings): mirrors how
         // MCPService delegates get wired in onObjectAdded.
         Component.onCompleted: {
-            onResult = function (callId, text) {
-                streaming._onToolCallCompleted(callId, text);
+            onResult = function (callId, text, images) {
+                streaming._onToolCallCompleted(callId, text, images);
             };
             onError = function (callId, err) {
                 streaming._onToolCallFailed(callId, err);

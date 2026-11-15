@@ -343,7 +343,7 @@ Item {
         _pendingToolCallMeta = { id: call.id || ("call_" + callId), name: toolName };
     }
 
-    function _onToolCallCompleted(callId, result) {
+    function _onToolCallCompleted(callId, result, images) {
         if (callId !== _pendingCallId) return;
         _pendingCallId = -1;
         _toolExecActive = false;
@@ -354,12 +354,18 @@ Item {
         var rawText = (typeof result === "string") ? result : JSON.stringify(result);
         toolActivity(activeStreamId, meta.name, "result", rawText);
         var modelText = Providers.unwrapMcpResult(result);
-        _toolResults.push({
+        var rec = {
             role: "tool",
             tool_call_id: meta.id,
             name: meta.name,
             content: modelText
-        });
+        };
+        // Screen captures arrive with an image; it rides the tool record
+        // and Providers places it per wire format. Turn-scoped: this
+        // array never reaches the persisted message rows.
+        var imgs = Providers.sanitizeImages(images);
+        if (imgs.length > 0) rec.images = imgs;
+        _toolResults.push(rec);
         _pendingToolCallMeta = null;
         _executeNextToolCall();
     }
