@@ -20,8 +20,19 @@ var MAX_BODY_BYTES = 2 * 1024 * 1024;
 // this string passes. Regression test guards it — don't "modernize".
 var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)";
 
+// Screen capture (take_screenshot): collected-base64 cap, so a busy
+// 4K screen fails on our side instead of being silently dropped by
+// Providers.sanitizeImages' 10 MB image gate. No downscaling — there
+// is no external image dependency; dms's own JPEG encoder bounds it.
+var MAX_SCREENSHOT_BYTES = 14 * 1024 * 1024;
+// Whitelist: this value is the only model input that reaches the shell
+// script. Anything else (including the out-of-scope interactive
+// "region" mode) normalizes to the focused window.
+var SCREENSHOT_MODES = ["window", "full", "all"];
+
 function isNativeTool(name) {
-    return name === "web_search" || name === "webfetch";
+    return name === "web_search" || name === "webfetch"
+        || name === "take_screenshot";
 }
 
 // Tool defs for chat requests. `enabledNames` (optional array) keeps
@@ -61,6 +72,31 @@ function toolDefs(enabledNames) {
                         }
                     },
                     required: ["url"]
+                }
+            }
+        },
+        {
+            type: "function",
+            function: {
+                name: "take_screenshot",
+                description: "Capture the user's screen and look at the " +
+                    "resulting image. Use this when the user refers to " +
+                    "something visible — 'what is this', 'why does this " +
+                    "window look wrong', 'read this error' — instead of " +
+                    "asking them to attach an image. mode: 'window' = the " +
+                    "focused application window (default), 'full' = the " +
+                    "whole focused monitor, 'all' = every monitor.",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        mode: {
+                            type: "string",
+                            enum: ["window", "full", "all"],
+                            description: "What to capture. Defaults to " +
+                                "'window' (the focused application window)."
+                        }
+                    },
+                    required: []
                 }
             }
         }
@@ -110,7 +146,17 @@ function validateArgs(name, args) {
             s = Math.max(0, parseInt(args.start_index, 10));
         return { ok: true, args: { url: u, start_index: s } };
     }
+    // Screen capture: no required arguments; the mode whitelist is the
+    // only value that ever reaches the shell script.
+    if (name === "take_screenshot")
+        return { ok: true, args: { mode: normalizeScreenshotMode(args.mode) } };
     return { ok: false, error: "Unknown native tool: " + String(name) };
+}
+
+// " FULL " → "full"; missing/junk/out-of-scope → "window".
+function normalizeScreenshotMode(mode) {
+    var m = typeof mode === "string" ? mode.trim().toLowerCase() : "";
+    return SCREENSHOT_MODES.indexOf(m) >= 0 ? m : "window";
 }
 
 // Split the STATUS_TRAILER off collected curl stdout.
@@ -160,6 +206,44 @@ function buildFetchRequest(args) {
         + 'user-agent = "' + USER_AGENT + '"\n'
         + 'location\n';
     return { ok: true, cmd: _baseCmd(20), config: config, args: v.args };
+}
+
+// ── Screen capture (take_screenshot) ─────────────────────────────
+// dms writes the encoded image to stdout; base64 stays in the shell so
+// no binary ever reaches the QML StdioCollector. No file, no clipboard
+// (the DMS clipboard keeps a durable copy of every image it receives).
+// No --no-notify: the capture should stay visible to the user.
+function buildScreenshotRequest(args) {
+    var v = validateArgs("take_screenshot", args);
+    if (!v.ok) return v;
+    var script = "dms screenshot " + v.args.mode
+        + " --no-file --no-clipboard --stdout -f jpg -q 85 2>/dev/null"
+        + " | base64 -w0";
+    return { ok: true, cmd: ["sh", "-c", script], config: "", args: v.args };
+}
+
+// Magic-byte sniff over the base64 head: PNG \x89PNG, JPEG \xFF\xD8\xFF,
+// WEBP RIFF, GIF "GIF8". "" for anything else (a failed capture, dms
+// error text on stdout, or a format Providers would reject).
+function sniffImageMime(b64) {
+    var s = String(b64 || "");
+    if (s.indexOf("iVBOR") === 0) return "image/png";
+    if (s.indexOf("/9j/") === 0) return "image/jpeg";
+    if (s.indexOf("UklGR") === 0) return "image/webp";
+    if (s.indexOf("R0lGOD") === 0) return "image/gif";
+    return "";
+}
+
+// Model-visible tool-result text. Says "examine the image" because
+// models routinely ignore an attached image when the text only says
+// "done"; states the turn-scoped lifetime so a later follow-up gets a
+// fresh capture instead of a guess from memory.
+function screenshotResultText(mode) {
+    var m = normalizeScreenshotMode(mode);
+    return "Screenshot captured (mode: " + m + ") and attached as an image. "
+        + "Examine the image to answer. The image is available for this "
+        + "turn only — call take_screenshot again if you need to look at "
+        + "the screen later.";
 }
 
 // ── Text helpers (shared with htmlToText) ────────────────────────
