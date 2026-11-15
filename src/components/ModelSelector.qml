@@ -668,7 +668,14 @@ Rectangle {
                 // No `value:` binding — the slider writes value
                 // imperatively on drag, which would break it. Sync both
                 // directions via onValueChanged + onRawValueChanged.
-                Component.onCompleted: value = card.rawValue
+                Component.onCompleted: {
+                    // The initial assignment must NOT look like a drag:
+                    // unguarded it fired onValueChanged and wrote the
+                    // card's starting value back into the settings store.
+                    card._syncing = true;
+                    value = card.rawValue;
+                    card._syncing = false;
+                }
                 onValueChanged: {
                     if (card._syncing) return;
                     // Clicking the number box gives it activeFocus; a

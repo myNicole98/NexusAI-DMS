@@ -16,7 +16,7 @@ import "../lib/ChatHistory.js" as ChatHistory
 Item {
     id: root
 
-    property string pluginId: "nexusAI"
+    property string pluginId: "nexusAi"
 
     // ── Conversation state ────────────────────────────────────────
 
@@ -167,9 +167,39 @@ Item {
     // dropping a file into the folder themes its models without any
     // code change.
     Component.onCompleted: {
-        _loadSettings();
+        // DMS parses plugin_settings.json asynchronously (the file is
+        // megabytes and shared by every plugin). Reading before it lands
+        // silently yields defaults — and the UI then wrote those defaults
+        // back over the stored values. Wait for our bucket to exist.
+        _loadSettingsWhenReady();
         iconScan.running = true;
+    }
+
+    // Load once the plugin's settings bucket is actually present. Bounded
+    // (~5 s) so a first-ever run is not stuck on a bucket that will never
+    // appear; after that, defaults are the truth.
+    property bool _settingsLoaded: false
+    property int _settingsWaited: 0
+
+    function _loadSettingsWhenReady() {
+        if (_settingsLoaded) return;
+        var probe = PluginService.loadPluginData(pluginId, "enabled",
+                                                 "__nexus_missing__");
+        if (probe === "__nexus_missing__" && _settingsWaited < 50) {
+            _settingsWaited++;
+            settingsReadyTimer.restart();
+            return;
+        }
+        _settingsLoaded = true;
+        _loadSettings();
         _connectAllEnabledMcpServers();
+    }
+
+    Timer {
+        id: settingsReadyTimer
+        interval: 100
+        repeat: false
+        onTriggered: root._loadSettingsWhenReady()
     }
 
     Process {

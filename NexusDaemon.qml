@@ -10,7 +10,7 @@ Item {
     id: root
 
     property var pluginService: null
-    property string pluginId: "nexusAI"
+    property string pluginId: "nexusAi"
 
     function toggle() {
         if (variants.instances.length > 0)
