@@ -7,6 +7,7 @@ import qs.Common
 import qs.Widgets
 import qs.Modals.FileBrowser
 import "../lib/Providers.js" as Providers
+import "../lib/WebTools.js" as WebTools
 
     // Composer: transparent input, send/stop right; input grows to a
     // cap then scrolls. Attachments stage above the input (clipboard
@@ -92,13 +93,11 @@ Item {
     }
 
     // Magic-byte sniffing over the base64 head: PNG \x89PNG, JPEG
-    // \xFF\xD8\xFF, WEBP RIFF, GIF8. "" for anything else.
+    // \xFF\xD8\xFF, WEBP RIFF, GIF8. "" for anything else. Single
+    // implementation lives in WebTools (the screenshot tool sniffs the
+    // same heads); this stays as the composer's local entry point.
     function sniffImageMime(b64) {
-        if (b64.indexOf("iVBOR") === 0) return "image/png";
-        if (b64.indexOf("/9j/") === 0) return "image/jpeg";
-        if (b64.indexOf("UklGR") === 0) return "image/webp";
-        if (b64.indexOf("R0lGOD") === 0) return "image/gif";
-        return "";
+        return WebTools.sniffImageMime(b64);
     }
 
     // File picker: DMS's native FileBrowser modal — Qt's FileDialog
