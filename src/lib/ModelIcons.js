@@ -76,3 +76,52 @@ function setAutoIcons(stems) {
     for (i = 0; i < list.length; i++)
         AUTO_RULES.push({ pattern: new RegExp(list[i], "i"), icon: list[i] });
 }
+
+// ── Known icon stems ─────────────────────────────────────────────
+// The icon folders are scanned once at startup and BrandIcon renders
+// exactly ONE Image through pathFor(). The old three-tier fallback
+// probed two folders before reaching models/, and each miss made Qt log
+// "Cannot open" on every render — that was the bulk of the shell log.
+//   KNOWN_ICONS[stem] = { dark: true, light: true, models: true }
+var KNOWN_ICONS = {};
+
+// rels like ["dark/openai.svg", "light/openai.svg", "models/gemini.svg"]
+function setKnownIcons(rels) {
+    var map = {};
+    var list = Array.isArray(rels) ? rels : [];
+    for (var i = 0; i < list.length; i++) {
+        var rel = String(list[i] || "").trim();
+        var slash = rel.indexOf("/");
+        if (slash < 0) continue;
+        var dir = rel.substring(0, slash);
+        var stem = rel.substring(slash + 1).replace(/\.svg$/, "");
+        if (!stem) continue;
+        if (!map[stem]) map[stem] = {};
+        map[stem][dir] = true;
+    }
+    KNOWN_ICONS = map;
+}
+
+// True once the startup scan has produced anything at all.
+function indexReady() {
+    return Object.keys(KNOWN_ICONS).length > 0;
+}
+
+function hasIcon(stem) {
+    return Object.prototype.hasOwnProperty.call(KNOWN_ICONS,
+                                               String(stem || ""));
+}
+
+// Exactly one existing path, relative to resources/icons, or "". The
+// active theme wins, then models/, then the other theme.
+function pathFor(stem, dark) {
+    var s = String(stem || "");
+    var entry = KNOWN_ICONS[s];
+    if (!entry) return "";
+    var theme = dark ? "dark" : "light";
+    var other = dark ? "light" : "dark";
+    if (entry[theme]) return theme + "/" + s + ".svg";
+    if (entry.models) return "models/" + s + ".svg";
+    if (entry[other]) return other + "/" + s + ".svg";
+    return "";
+}

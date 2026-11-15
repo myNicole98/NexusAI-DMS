@@ -38,6 +38,11 @@ Item {
     property string _sessionHeader: ""     // streamable Mcp-Session-Id
     property string _postTarget: ""        // legacy POST target
     property bool _initRetried: false      // one protocol-version retry
+    // URL+token of the last attempt: the keyring emits keysChanged once per
+    // looked-up account, and every event used to retrigger a connect — a
+    // failed server (e.g. a 401) then produced a burst of identical
+    // attempts and log lines. One attempt per distinct configuration.
+    property string _attemptKey: ""
     property var _livePosts: []            // in-flight POST Process objects
 
     // Result delivery callbacks (set by NexusService); called
@@ -55,9 +60,12 @@ Item {
     // --- Public API ---
 
     function connectToServer() {
-        console.warn("NEXUS_MCP: connect requested — url:", mcpUrl,
-            "token len:", mcpToken.length);
         if (connecting || isConnected) return;
+        var key = mcpUrl + "\u0000" + mcpToken;
+        if (connectionError && key === _attemptKey) return;   // already failed
+        _attemptKey = key;
+        console.log("NEXUS_MCP: connect requested (token len",
+            mcpToken.length + ")");
         if (!mcpUrl) {
             connectionError = "MCP URL is required.";
             return;
@@ -170,7 +178,7 @@ Item {
     }
 
     function _listTools() {
-        console.warn("NEXUS_MCP: listing tools");
+        console.log("NEXUS_MCP: listing tools");
         var id = _nextId++;
         _pendingRequests[id] = {
             resolve: function (result) {
@@ -521,7 +529,7 @@ Item {
             if (root._transport === "streamable" && !root.isConnected
                 && root._initialized) {
                 // Streamable servers may not support server push (405).
-                console.warn("NEXUS_MCP: no push stream (GET failed) — continuing without.");
+                console.log("NEXUS_MCP: no push stream (GET failed) — continuing without.");
                 return;
             }
             if (root.isConnected || root.connecting) {

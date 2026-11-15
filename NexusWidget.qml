@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Common
+import qs.DCommon.Widgets
 import qs.Widgets
 import qs.Modules.Plugins
 
@@ -8,7 +9,7 @@ PluginComponent {
     id: root
 
     horizontalBarPill: Component {
-        DankIcon {
+        DIcon {
             name: "orbit"
             size: root.iconSize
             color: Theme.widgetIconColor
@@ -16,7 +17,7 @@ PluginComponent {
     }
 
     verticalBarPill: Component {
-        DankIcon {
+        DIcon {
             name: "orbit"
             size: root.iconSize
             color: Theme.widgetIconColor

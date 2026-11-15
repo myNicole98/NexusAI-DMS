@@ -4,6 +4,7 @@ import QtQuick.Layouts
 import QtQuick.Window
 import Quickshell
 import qs.Common
+import qs.DCommon.Widgets
 import qs.Widgets
 import "../lib/Markdown.js" as Markdown
 import "../lib/SyntaxHighlight.js" as SyntaxHighlight
@@ -117,7 +118,7 @@ Rectangle {
             onHoveredChanged: parent._hovered = hovered
         }
         TapHandler { onTapped: hov.clicked() }
-        DankIcon {
+        DIcon {
             anchors.centerIn: parent
             name: hov.iconName
             size: hov.iconSize
@@ -789,7 +790,7 @@ Rectangle {
 
                             // Persisted chats strip base64 payloads —
                             // show a placeholder chip instead.
-                            DankIcon {
+                            DIcon {
                                 anchors.centerIn: parent
                                 name: "image"
                                 size: 22
@@ -876,7 +877,7 @@ Rectangle {
         }
 
         // Retry affordance for errors
-        DankButton {
+        DButton {
             visible: msgState === "error"
             text: "Retry"
             iconName: "refresh"
@@ -889,6 +890,7 @@ Rectangle {
     Component {
         id: textSegComp
         TextArea {
+            id: segText
             property var seg: null
             // Qt only tracks link hover (and emits linkHovered) when the
             // signal has a connection — this handler is what enables the
@@ -926,7 +928,7 @@ Rectangle {
             }
 
             HoverHandler {
-                cursorShape: hoverUrl.length > 0
+                cursorShape: segText.hoverUrl.length > 0
                     ? Qt.PointingHandCursor : undefined
             }
         }
@@ -1028,7 +1030,7 @@ Rectangle {
                             anchors.verticalCenter: parent.verticalCenter
                             spacing: 6
 
-                            DankIcon {
+                            DIcon {
                                 name: "expand_more"
                                 size: 16
                                 color: codeBarHover.hovered
@@ -1080,8 +1082,8 @@ Rectangle {
         ColumnLayout {
             id: ponderPane
             property var entry: null
-            readonly property bool live: entry ? entry.live : false
-            readonly property bool busy: entry ? entry.busy : false
+            readonly property bool live: entry ? entry.live === true : false
+            readonly property bool busy: entry ? entry.busy === true : false
             readonly property int srcIdx: entry && entry.srcIdx !== undefined
                 ? entry.srcIdx : -1
             readonly property bool expanded:
@@ -1114,7 +1116,7 @@ Rectangle {
 
                     Item {
                         width: 16; height: 16
-                        DankIcon {
+                        DIcon {
                             anchors.centerIn: parent
                             name: "emoji_objects"
                             size: 16
@@ -1124,7 +1126,7 @@ Rectangle {
                                 NumberAnimation { duration: 220 }
                             }
                         }
-                        DankIcon {
+                        DIcon {
                             anchors.centerIn: parent
                             name: "expand_more"
                             size: 16
@@ -1235,6 +1237,7 @@ Rectangle {
                     // cached static markdown. Same link-hover treatment as
                     // the body segments (settled text only).
                     TextArea {
+                        id: ponderText
                         width: pContent.width
                         property string hoverUrl: ""
                         readonly property bool hoverStyled: hoverUrl.length > 0
@@ -1273,7 +1276,7 @@ Rectangle {
                         }
 
                         HoverHandler {
-                            cursorShape: hoverUrl.length > 0
+                            cursorShape: ponderText.hoverUrl.length > 0
                                 ? Qt.PointingHandCursor : undefined
                         }
                     }
@@ -1417,7 +1420,7 @@ Rectangle {
                         // to a chevron on hover.
                         Item {
                             width: 16; height: 16
-                            DankIcon {
+                            DIcon {
                                 anchors.centerIn: parent
                                 name: NativeToolMeta.icon(toolEntry.entry ? toolEntry.entry.name : "")
                                 size: 14
@@ -1427,7 +1430,7 @@ Rectangle {
                                     NumberAnimation { duration: 220 }
                                 }
                             }
-                            DankIcon {
+                            DIcon {
                                 anchors.centerIn: parent
                                 name: "expand_more"
                                 size: 14

@@ -10,6 +10,7 @@ import "../lib/PromptPresets.js" as PromptPresets
 import "../lib/McpTools.js" as McpTools
 import "../lib/WebTools.js" as WebTools
 import "../lib/ShellTools.js" as ShellTools
+import "../lib/FileTools.js" as FileTools
 import "../lib/ContextWindows.js" as ContextWindows
 import "../lib/ChatHistory.js" as ChatHistory
 
@@ -208,16 +209,34 @@ Item {
             // decodeURIComponent: resolvedUrl percent-encodes the
             // space in "Nexus AI", and ls would target a nonexistent
             // directory.
-            var dir = decodeURIComponent(
-                Qt.resolvedUrl("../../resources/icons/models").toString().replace("file://", ""));
-            return ["sh", "-c", "ls -1 '" + dir + "' | grep '\\.svg$' | sed 's/\\.svg$//'"];
+            var base = decodeURIComponent(
+                Qt.resolvedUrl("../../resources/icons").toString().replace("file://", ""));
+            // One scan feeds both the auto-icon rules (models dir) and the
+            // known-stem index BrandIcon uses to avoid probing missing
+            // assets (each probe logs "Cannot open").
+            return ["sh", "-c",
+                    "find '" + base + "' -maxdepth 2 -name '*.svg'"
+                    + " -printf '%P\\n' | sort -u"];
         }
         stdout: StdioCollector {
             onStreamFinished: {
-                var stems = text.split("\n").map(function (x) { return x.trim(); })
-                    .filter(function (x) { return x.length > 0; });
-                ModelIcons.setAutoIcons(stems);
-                root.modelIconStems = stems;
+                var rels = [];
+                var models = [];
+                var rows = text.split("\n");
+                for (var i = 0; i < rows.length; i++) {
+                    var rel = rows[i].trim();
+                    if (!rel) continue;
+                    var stem = rel.substring(rel.lastIndexOf("/") + 1)
+                                  .replace(/\.svg$/, "");
+                    if (!stem) continue;
+                    rels.push(rel);
+                    // Auto-icon rules keep coming from the drop-in
+                    // models folder only (unchanged behaviour).
+                    if (rel.indexOf("models/") === 0) models.push(stem);
+                }
+                ModelIcons.setAutoIcons(models);
+                ModelIcons.setKnownIcons(rels);
+                root.modelIconStems = models;
             }
         }
     }
@@ -1004,8 +1023,10 @@ Item {
         }
         // Shell access is its own switch, independent of the web tools:
         // it is the only tool that can change the machine.
-        if (shellEnabled)
+        if (shellEnabled) {
             out = out.concat(ShellTools.toolDefs(["run_command"]));
+            out = out.concat(FileTools.toolDefs());
+        }
         return out;
     }
 
@@ -1191,6 +1212,7 @@ Item {
         if (name === "webfetch") return webFetchEnabled;
         if (name === "take_screenshot") return screenshotEnabled;
         if (name === "run_command") return shellEnabled;
+        if (FileTools.isNativeTool(name)) return shellEnabled;
         return false;
     }
 
@@ -2004,7 +2026,8 @@ Item {
             return root.getChatTools();
         }
         function callTool(name, args) {
-            if (WebTools.isNativeTool(name) || ShellTools.isNativeTool(name)) {
+            if (WebTools.isNativeTool(name) || ShellTools.isNativeTool(name)
+                    || FileTools.isNativeTool(name)) {
                 // Defense in depth: a disabled native tool never
                 // reaches the model's tool list, but a stale or
                 // replayed call must not execute either.
@@ -2015,7 +2038,8 @@ Item {
                 // -1 would be read as a refusal.
                 var nativeId = -(_nativeCallCounter + 1);
                 nativeTools.execute(nativeId, name, args,
-                                    name === "run_command"
+                                    (name === "run_command"
+                                     || FileTools.isNativeTool(name))
                                     ? root.shellPolicy() : null);
                 return nativeId;
             }
@@ -2075,7 +2099,6 @@ Item {
                              "from=", sid, "err=", err);
                 streaming._onToolCallFailed(callId, err);
             };
-            console.warn("NEXUS_MCP_WIRE: callbacks set for id=", sid);
         }
         onObjectRemoved: (idx, obj) => {
             var sid = String(obj.serverId || "");

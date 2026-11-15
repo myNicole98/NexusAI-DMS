@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import qs.Common
+import qs.DCommon.Widgets
 import qs.Widgets
 
 // Native chat tools settings (web_search / webfetch): one toggle row
@@ -72,7 +73,7 @@ Item {
             width: 20
             height: 20
 
-            DankIcon {
+            DIcon {
                 anchors.fill: parent
                 name: "check_box_outline_blank"
                 size: 20
@@ -87,7 +88,7 @@ Item {
                 }
             }
 
-            DankIcon {
+            DIcon {
                 anchors.fill: parent
                 name: "check_box"
                 size: 20

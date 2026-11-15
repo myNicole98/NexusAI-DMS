@@ -2,6 +2,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Wayland
 import qs.Common
+import qs.DCommon.Widgets
 import qs.Services
 import qs.Widgets
 
@@ -435,7 +436,7 @@ PanelWindow {
                             anchors.verticalCenter: parent.verticalCenter
                             spacing: 2
 
-                            DankActionButton {
+                            DActionButton {
                                 id: historyButton
                                 // Hidden while settings overlays the chat.
                                 visible: root.service
@@ -469,14 +470,14 @@ PanelWindow {
                             anchors.verticalCenter: parent.verticalCenter
                             spacing: Theme.spacingXS
 
-                            DankActionButton {
+                            DActionButton {
                                 iconName: "delete_sweep"
                                 iconSize: Theme.iconSize - 4
                                 iconColor: Theme.surfaceText
                                 onClicked: if (root.service) root.service.newChat()
                             }
 
-                            DankActionButton {
+                            DActionButton {
                                 iconName: contentLoader.item
                                           && contentLoader.item.state === "settings"
                                           ? "arrow_back" : "tune"
@@ -490,7 +491,7 @@ PanelWindow {
                             }
 
                             // Edge flip (docked only).
-                            DankActionButton {
+                            DActionButton {
                                 visible: !root.floating
                                 iconName: root.service && root.service.panelEdge === "left"
                                           ? "arrow_right" : "arrow_left"
@@ -505,7 +506,7 @@ PanelWindow {
                             }
 
                             // Reduced size toggle (floating, not fullscreen).
-                            DankActionButton {
+                            DActionButton {
                                 visible: root.floating && !root.floatFull
                                 iconName: root.floatSmall
                                           ? "expand_content" : "collapse_content"
@@ -515,7 +516,7 @@ PanelWindow {
                             }
 
                             // Fullscreen toggle (floating).
-                            DankActionButton {
+                            DActionButton {
                                 visible: root.floating
                                 iconName: root.floatFull
                                           ? "fullscreen_exit" : "fullscreen"
@@ -525,7 +526,7 @@ PanelWindow {
                             }
 
                             // Float/dock the panel.
-                            DankActionButton {
+                            DActionButton {
                                 iconName: root.floating ? "dock_to_left" : "open_in_new"
                                 iconSize: Theme.iconSize - 4
                                 iconColor: Theme.surfaceText
@@ -539,7 +540,7 @@ PanelWindow {
                             }
 
                             // Wide/narrow (docked only).
-                            DankActionButton {
+                            DActionButton {
                                 id: expandButton
                                 visible: !root.floating
                                 iconName: root.expanded ? "unfold_less" : "unfold_more"
@@ -553,7 +554,7 @@ PanelWindow {
                                 onClicked: root.expanded = !root.expanded
                             }
 
-                            DankActionButton {
+                            DActionButton {
                                 iconName: "close"
                                 iconSize: Theme.iconSize - 4
                                 iconColor: Theme.surfaceText

@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import qs.Common
+import qs.DCommon.Widgets
 import qs.Widgets
 
 Item {
@@ -119,7 +120,7 @@ Item {
                         anchors.centerIn: parent
                         spacing: 6
 
-                        DankIcon {
+                        DIcon {
                             anchors.verticalCenter: parent.verticalCenter
                             name: "construction"
                             size: 14
@@ -167,7 +168,7 @@ Item {
                         anchors.centerIn: parent
                         spacing: 6
 
-                        DankIcon {
+                        DIcon {
                             anchors.verticalCenter: parent.verticalCenter
                             name: "home_repair_service"
                             size: 14
@@ -248,7 +249,7 @@ Item {
                             anchors.verticalCenter: parent.verticalCenter
                             spacing: 8
 
-                            DankIcon {
+                            DIcon {
                                 anchors.verticalCenter: parent.verticalCenter
                                 name: "add"
                                 size: 18
@@ -325,7 +326,7 @@ Item {
                                         elide: Text.ElideRight
                                     }
 
-                                    DankActionButton {
+                                    DActionButton {
                                         id: rowDelete
                                         anchors.right: parent.right
                                         anchors.rightMargin: 4
@@ -368,7 +369,7 @@ Item {
                             }
                         }
 
-                        ScrollBar.vertical: DankScrollbar {}
+                        ScrollBar.vertical: DScrollbar {}
                     }
                 }
             }
@@ -465,7 +466,7 @@ Item {
                     Behavior on opacity { NumberAnimation { duration: 250 } }
                 }
 
-                DankIcon {
+                DIcon {
                     anchors.centerIn: parent
                     name: "attach_file"
                     size: 18
@@ -511,7 +512,7 @@ Item {
                     Behavior on opacity { NumberAnimation { duration: 250 } }
                 }
 
-                DankIcon {
+                DIcon {
                     anchors.centerIn: parent
                     name: "home_repair_service"
                     size: 18
@@ -562,7 +563,7 @@ Item {
                     Behavior on opacity { NumberAnimation { duration: 250 } }
                 }
 
-                DankIcon {
+                DIcon {
                     anchors.centerIn: parent
                     name: "terminal"
                     size: 18
@@ -612,7 +613,7 @@ Item {
                     Behavior on opacity { NumberAnimation { duration: 250 } }
                 }
 
-                DankIcon {
+                DIcon {
                     anchors.centerIn: parent
                     name: "construction"
                     size: 18

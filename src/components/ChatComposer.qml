@@ -4,6 +4,7 @@ import QtQuick.Layouts
 import Quickshell
 import Quickshell.Io
 import qs.Common
+import qs.DCommon.Widgets
 import qs.Widgets
 import qs.Modals.FileBrowser
 import "../lib/Providers.js" as Providers
@@ -225,7 +226,7 @@ Item {
                         border.width: 1
                         border.color: Theme.outlineVariant
                     }
-                    DankIcon {
+                    DIcon {
                         anchors.centerIn: parent
                         name: "close"
                         size: 12
@@ -274,7 +275,7 @@ Item {
             interactive: contentHeight > height
             flickableDirection: Flickable.VerticalFlick
 
-            ScrollBar.vertical: DankScrollbar { _scrollBarActive: true }
+            ScrollBar.vertical: DScrollbar { _scrollBarActive: true }
 
             TextEdit {
                 id: input
@@ -342,7 +343,7 @@ Item {
 
         // Discard affordance while a message edit is in progress:
         // drops the draft and leaves edit mode.
-        DankButton {
+        DButton {
             iconName: "close"
             text: ""
             buttonHeight: 36
@@ -472,7 +473,7 @@ Item {
                 width: 64
                 height: parent.height
 
-                DankIcon {
+                DIcon {
                     anchors.centerIn: parent
                     name: busy ? "stop_circle"
                         : (service && service.editingMessageId.length > 0
@@ -505,7 +506,7 @@ Item {
                 width: 30
                 height: parent.height
 
-                DankIcon {
+                DIcon {
                     anchors.centerIn: parent
                     name: "arrow_drop_down"
                     size: 18
@@ -576,7 +577,7 @@ Item {
                             anchors.rightMargin: 10
                             spacing: 8
 
-                            DankIcon {
+                            DIcon {
                                 name: modRow.modelData.icon
                                 size: 16
                                 color: modRow.active || modRow.hovered
@@ -593,7 +594,7 @@ Item {
                                 elide: Text.ElideRight
                             }
 
-                            DankIcon {
+                            DIcon {
                                 visible: modRow.active
                                 name: "check"
                                 size: 16

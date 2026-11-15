@@ -3,6 +3,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Window
 import qs.Common
+import qs.DCommon.Widgets
 import qs.Widgets
 import "../lib/PromptPresets.js" as PromptPresets
 
@@ -293,7 +294,7 @@ Item {
                             }
                         }
 
-                        DankToggle {
+                        DToggle {
                             Layout.alignment: Qt.AlignVCenter
                             hideText: true
                             checked: historyToggle.on
@@ -322,7 +323,7 @@ Item {
                         anchors.rightMargin: 12
                         spacing: 12
 
-                        DankIcon {
+                        DIcon {
                             name: "delete_forever"
                             size: 20
                             color: deleteAllRow.armed
@@ -366,6 +367,6 @@ Item {
             Item { Layout.fillHeight: true }
         }
 
-        ScrollBar.vertical: DankScrollbar {}
+        ScrollBar.vertical: DScrollbar {}
     }
 }

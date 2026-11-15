@@ -96,7 +96,7 @@ Item {
                     Theme.surfaceVariantText, 0.55)
                 strokeWidth: 3
                 fillColor: "transparent"
-                capStyle: ShapePath.Round
+                capStyle: ShapePath.RoundCap
                 startX: ring.cx
                 startY: ring.cy - ring.rr
                 PathArc {
@@ -114,7 +114,7 @@ Item {
                 strokeColor: Theme.primary
                 strokeWidth: 3
                 fillColor: "transparent"
-                capStyle: ShapePath.Round
+                capStyle: ShapePath.RoundCap
                 startX: ring.cx
                 startY: ring.cy - ring.rr
                 PathArc {

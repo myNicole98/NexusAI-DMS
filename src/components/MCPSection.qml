@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import qs.Common
+import qs.DCommon.Widgets
 import qs.Widgets
 
   // MCP servers settings: one collapsible row per instance with a
@@ -86,7 +87,7 @@ Item {
                                 : Theme.withAlpha(Theme.surfaceContainerHighest, 0.5)
         Behavior on color { ColorAnimation { duration: 200 } }
 
-        DankIcon {
+        DIcon {
             anchors.centerIn: parent
             name: nib.iconName
             size: nib.iconSize
@@ -165,7 +166,7 @@ Item {
             height: 20
             scale: toolRow.checkScale
 
-            DankIcon {
+            DIcon {
                 anchors.fill: parent
                 name: "check_box_outline_blank"
                 size: 20
@@ -175,7 +176,7 @@ Item {
                 Behavior on opacity { NumberAnimation { duration: 220; easing.type: Easing.InOutQuad } }
             }
 
-            DankIcon {
+            DIcon {
                 anchors.fill: parent
                 name: "check_box"
                 size: 20
@@ -245,7 +246,7 @@ Item {
 
             Item { Layout.fillWidth: true }
 
-            DankButton {
+            DButton {
                 text: "Add MCP Server"
                 iconName: "add"
                 buttonHeight: 36
@@ -341,7 +342,7 @@ Item {
                         anchors.rightMargin: 10
                         spacing: 8
 
-                        DankIcon {
+                        DIcon {
                             name: "expand_more"
                             size: 22
                             color: Theme.surfaceVariantText
@@ -365,7 +366,7 @@ Item {
                             color: Theme.withAlpha(Theme.primary, 0.18)
                             opacity: serverRow.off ? 0.45 : 1
                             Behavior on opacity { NumberAnimation { duration: 200 } }
-                            DankIcon {
+                            DIcon {
                                 anchors.centerIn: parent
                                 name: "handyman"
                                 size: 16
@@ -466,7 +467,7 @@ Item {
                         anchors.margins: 12
                         spacing: 10
 
-                        DankTextField {
+                        DTextField {
                             Layout.fillWidth: true
                             labelText: "Name"
                             text: block.modelData && block.modelData.name ? String(block.modelData.name) : ""
@@ -475,7 +476,7 @@ Item {
                                 root.service.renameMcpServer(block.sid, text)
                         }
 
-                        DankTextField {
+                        DTextField {
                             Layout.fillWidth: true
                             labelText: "MCP server URL"
                             placeholderText: "https://example.test/mcp"
@@ -485,7 +486,7 @@ Item {
                                 root.service.setMcpServerUrl(block.sid, text)
                         }
 
-                        DankTextField {
+                        DTextField {
                             Layout.fillWidth: true
                             labelText: "Auth token"
                             placeholderText: {
@@ -558,7 +559,7 @@ Item {
                             Layout.fillWidth: true
                             spacing: 8
 
-                            DankButton {
+                            DButton {
                                 text: {
                                     if (block.connecting) return "Connecting…";
                                     if (block.connected) return "Reconnect";
@@ -607,7 +608,7 @@ Item {
 
                             Item { Layout.fillWidth: true }
 
-                            DankButton {
+                            DButton {
                                 text: "Select all"
                                 iconName: "done_all"
                                 buttonHeight: 26
@@ -618,7 +619,7 @@ Item {
                                     root.service.selectAllMcpTools(block.sid)
                             }
 
-                            DankButton {
+                            DButton {
                                 text: "Deselect all"
                                 iconName: "remove_done"
                                 buttonHeight: 26

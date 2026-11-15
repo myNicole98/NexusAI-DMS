@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import qs.Common
+import qs.DCommon.Widgets
 import qs.Widgets
 
 // Shell tool settings: the YOLO opt-in only. The tool switch itself is
@@ -46,7 +47,7 @@ Item {
             cursorShape: Qt.PointingHandCursor
         }
 
-        DankIcon {
+        DIcon {
             anchors.left: parent.left
             anchors.leftMargin: 12
             anchors.verticalCenter: parent.verticalCenter

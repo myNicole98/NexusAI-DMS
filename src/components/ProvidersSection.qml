@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import qs.Common
+import qs.DCommon.Widgets
 import qs.Widgets
 import "../lib/Providers.js" as Providers
 import "../lib/ModelIcons.js" as ModelIcons
@@ -25,13 +26,17 @@ Item {
         _gridRebuilding = true;
         gridSettleTimer.restart();
     }
+    // The model list lives inside a per-provider delegate, so the scroll
+    // is requested by signal instead of reaching across scopes (the old
+    // direct reference was a ReferenceError on every rebuild).
+    signal modelScrollRequested()
+
     Timer {
         id: gridSettleTimer
         interval: 0
         onTriggered: {
             root._gridRebuilding = false;
-            modelFlick.contentY = Math.min(root.modelGridY,
-                Math.max(0, modelFlick.contentHeight - modelFlick.height));
+            root.modelScrollRequested();
         }
     }
     // One-shot animation handoff: a click arms a key so the delegate
@@ -179,7 +184,7 @@ Item {
                                               : Theme.withAlpha(Theme.surfaceContainerHighest, 0.5))
         Behavior on color { ColorAnimation { duration: 200 } }
 
-        DankIcon {
+        DIcon {
             anchors.centerIn: parent
             name: nib.iconName
             size: nib.iconSize
@@ -275,7 +280,7 @@ Item {
             height: 20
             scale: modelRow.checkScale
 
-            DankIcon {
+            DIcon {
                 anchors.fill: parent
                 name: "check_box_outline_blank"
                 size: 20
@@ -285,7 +290,7 @@ Item {
                 Behavior on opacity { NumberAnimation { duration: 220; easing.type: Easing.InOutQuad } }
             }
 
-            DankIcon {
+            DIcon {
                 anchors.fill: parent
                 name: "check_box"
                 size: 20
@@ -332,7 +337,7 @@ Item {
             width: 26
             height: parent.height
 
-            DankIcon {
+            DIcon {
                 anchors.centerIn: parent
                 name: "close"
                 size: 14
@@ -382,7 +387,7 @@ Item {
             anchors.verticalCenter: parent.verticalCenter
             height: parent.height
 
-            DankIcon {
+            DIcon {
                 anchors.centerIn: parent
                 name: "edit"
                 size: 14
@@ -443,7 +448,7 @@ Item {
 
             Item { Layout.fillWidth: true }
 
-            DankButton {
+            DButton {
                 text: "Add provider"
                 iconName: "add"
                 buttonHeight: 36
@@ -553,7 +558,7 @@ Item {
                         // Chevron: right when collapsed, rotates down
                         // when expanded (matches the card opening
                         // below the row).
-                        DankIcon {
+                        DIcon {
                             name: "expand_more"
                             size: 22
                             color: Theme.surfaceVariantText
@@ -662,7 +667,7 @@ Item {
                           // Persist on editingFinished, not per keystroke:
                           // every service write resets this Repeater and
                           // would kill the focused field.
-                        DankTextField {
+                        DTextField {
                             Layout.fillWidth: true
                             labelText: "Name"
                             text: block.modelData && block.modelData.name ? String(block.modelData.name) : ""
@@ -671,7 +676,7 @@ Item {
                                 root.service.renameProvider(block.pid, text)
                         }
 
-                        DankTextField {
+                        DTextField {
                             Layout.fillWidth: true
                             labelText: "Base URL"
                             placeholderText: "https://api.openai.com/v1"
@@ -681,7 +686,7 @@ Item {
                                 root.service.setProviderUrl(block.pid, text)
                         }
 
-                        DankTextField {
+                        DTextField {
                             Layout.fillWidth: true
                             labelText: "API key"
                             placeholderText: block.envVarName
@@ -720,7 +725,7 @@ Item {
                             Layout.fillWidth: true
                             spacing: 8
 
-                            DankButton {
+                            DButton {
                                 text: root.service && root.service.modelsRefreshing
                                     ? "Refreshing…" : "Refresh models"
                                 iconName: "refresh"
@@ -747,7 +752,7 @@ Item {
                             Layout.fillWidth: true
                             spacing: 8
 
-                            DankTextField {
+                            DTextField {
                                 id: customModelField
                                 Layout.fillWidth: true
                                 placeholderText: "Add custom model"
@@ -768,7 +773,7 @@ Item {
                             }
                         }
 
-                        DankTextField {
+                        DTextField {
                             id: modelFilterField
                             Layout.fillWidth: true
                             placeholderText: "Search models"
@@ -804,6 +809,16 @@ Item {
                                 && ((block.modelData.discovered && block.modelData.discovered.length > 0)
                                     || (block.modelData.customModels && block.modelData.customModels.length > 0))
                             Layout.preferredHeight: 352
+
+                            Connections {
+                                target: root
+                                function onModelScrollRequested() {
+                                    modelFlick.contentY = Math.min(
+                                        root.modelGridY,
+                                        Math.max(0, modelFlick.contentHeight
+                                                    - modelFlick.height));
+                                }
+                            }
 
                             Flickable {
                                 id: modelFlick

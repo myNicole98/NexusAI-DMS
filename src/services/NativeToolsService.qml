@@ -2,6 +2,7 @@ import QtQuick
 import Quickshell.Io
 import "../lib/WebTools.js" as WebTools
 import "../lib/ShellTools.js" as ShellTools
+import "../lib/FileTools.js" as FileTools
 import "../lib/ErrorHints.js" as ErrorHints
 import "../lib/Providers.js" as Providers
 
@@ -51,6 +52,19 @@ Item {
     // A held permission request must not outlive the user's patience.
     readonly property int _approvalTimeoutMs: 180000
 
+    // ── File tools state ──────────────────────────────────────────
+    // One phase machine per job: stat → (read|diff|approval) → write.
+    property var _fileMeta: null      // {tool, path, args}
+    property string _filePhase: ""    // stat|read|readForDiff|reread|write|move
+    property int _fileSize: -1        // -1 = missing
+    property string _fileSnapshot: "" // content the diff was computed from
+    property var _fileEdit: null      // {count, oldLines, newLines, diff}
+    property string _pendingWrite: ""
+    // StdioCollector.text keeps the previous job's text when a read
+    // produces nothing — a chunk flag is the only honest signal.
+    property bool _fileSawChunk: false
+    readonly property string _tmpSuffix: ".nexus-tmp"
+
     function execute(callId, toolName, argsJson, policy) {
         _queue.push({ callId: callId, toolName: String(toolName || ""),
                       args: Providers.parseToolArgs(argsJson),
@@ -72,6 +86,11 @@ Item {
         if (job.toolName === "run_command") {
             _busy = true;
             _startShellJob(job);
+            return;
+        }
+        if (FileTools.isNativeTool(job.toolName)) {
+            _busy = true;
+            _startFileJob(job);
             return;
         }
         var req;
@@ -123,14 +142,19 @@ Item {
     }
 
     function _raiseApproval(verdict) {
+        return _raiseApprovalRequest({ kind: verdict.kind,
+                                       command: _shellMeta.command,
+                                       cwd: _shellMeta.cwd,
+                                       timeoutSeconds: _shellMeta.timeoutSeconds });
+    }
+
+    // One place to park a job until the user decides, whatever the tool.
+    function _raiseApprovalRequest(fields) {
+        var req = fields || {};
+        req.callId = _currentId;
         _awaitingApproval = true;
-        _approvalRequest = {
-            callId: _currentId,
-            kind: verdict.kind,
-            command: _shellMeta.command,
-            cwd: _shellMeta.cwd,
-            timeoutSeconds: _shellMeta.timeoutSeconds
-        };
+        _approvalRequest = req;
+        jobTimer.stop();          // a person is thinking, not a process
         approvalTimer.start();
         if (root.onApprovalNeeded) {
             try { root.onApprovalNeeded(_currentId, _approvalRequest); }
@@ -149,10 +173,240 @@ Item {
         _awaitingApproval = false;
         _approvalRequest = null;
         if (action !== "allow-once") {
-            _deliverError("The user denied permission to run this command.");
+            _deliverError(_fileMeta
+                ? "The user denied permission for this file operation."
+                : "The user denied permission to run this command.");
             return;
         }
+        if (_fileMeta) { _fileApproved(); return; }
         _runShell();
+    }
+
+    // ── File tools (read_file / write_file / edit_file) ───────────
+    // argv processes only: stat → cat → approval → tee+mv. No shell, so
+    // no path or content is ever quoted into a command string.
+
+    function _startFileJob(job) {
+        var v = FileTools.validateArgs(job.toolName, job.args);
+        if (!v.ok) { _deliverError(v.error); return; }
+        var home = String((job.policy && job.policy.home) || "/");
+        _fileMeta = { tool: job.toolName,
+                      path: FileTools.resolvePath(v.args.path, home),
+                      args: v.args,
+                      yolo: !!(job.policy && job.policy.yolo === true) };
+        _fileSnapshot = "";
+        _fileEdit = null;
+        _pendingWrite = "";
+        _fileSize = -1;
+        _jobTimeoutMs = 30000;
+        _filePhase = "stat";
+        statProc.command = ["stat", "-c", "%s", _fileMeta.path];
+        statProc.running = true;
+        jobTimer.start();
+    }
+
+    function _onStatDone(code, text) {
+        if (_filePhase !== "stat") return;
+        if (code !== 0) {
+            _fileSize = -1;
+        } else {
+            _fileSize = parseInt(String(text || "").trim(), 10);
+            if (!isFinite(_fileSize)) _fileSize = -1;
+        }
+        var meta = _fileMeta;
+        if (_fileSize > FileTools.MAX_FILE_BYTES) {
+            _deliverError(meta.path + " is "
+                          + FileTools.humanSize(_fileSize)
+                          + " — too large for the file tools; use run_command.");
+            return;
+        }
+        if (meta.tool === "read_file") {
+            if (_fileSize < 0) {
+                _deliverError("No such file: " + meta.path);
+                return;
+            }
+            if (meta.yolo) { _filePhase = "read"; _runCat(); return; }
+            _raiseApprovalRequest({ kind: "read", path: meta.path,
+                                    size: _fileSize });
+            return;
+        }
+        if (meta.tool === "write_file") {
+            if (meta.yolo) { _fileWriteApproved(); return; }
+            var content = meta.args.content;
+            _raiseApprovalRequest({
+                kind: "write", path: meta.path,
+                size: content.length,
+                preview: FileTools.unifiedDiff("", content, 0).rows
+                    .slice(0, 6).map(function (r) { return r.text; }),
+                existed: _fileSize >= 0
+            });
+            return;
+        }
+        // edit_file needs the current content to build the diff.
+        if (_fileSize < 0) {
+            _deliverError("No such file: " + meta.path
+                          + " — use write_file to create it.");
+            return;
+        }
+        _filePhase = "readForDiff";
+        _runCat();
+    }
+
+    function _runCat() {
+        if (_filePhase === "write" || _filePhase === "move") return;
+        _fileSawChunk = false;      // re-arm the collector for this read
+        fileProc.stdinEnabled = false;
+        fileProc.command = ["cat", "--", _fileMeta.path];
+        fileProc.running = true;
+        jobTimer.start();
+    }
+
+    function _onCatDone(code) {
+        if (code !== 0) {
+            _deliverError("Could not read " + _fileMeta.path
+                          + " (cat exit " + code + ").");
+            return;
+        }
+        var text = _fileSawChunk ? fileOut.text : "";
+        var meta = _fileMeta;
+
+        if (_filePhase === "read") {
+            var r = FileTools.formatRead(text, meta.args.offset,
+                                         meta.args.limit);
+            _deliverOk(r.text.length > 0 ? r.text
+                                         : "(no lines at offset "
+                                           + meta.args.offset + ")");
+            return;
+        }
+
+        if (_filePhase === "readForDiff") {
+            if (FileTools.looksBinary(text)) {
+                _deliverError(meta.path + " looks binary — use run_command.");
+                return;
+            }
+            if (FileTools.isLossyText(text)) {
+                _deliverError(meta.path + " is not valid UTF-8 — editing it "
+                              + "would corrupt it; use run_command.");
+                return;
+            }
+            var res = FileTools.applyEdit(text, meta.args.oldString,
+                                          meta.args.newString,
+                                          meta.args.replaceAll);
+            if (!res.ok) {
+                _deliverError(res.error + " (" + meta.path + ")");
+                return;
+            }
+            var diff = FileTools.unifiedDiff(text, res.content, 3);
+            _fileSnapshot = text;
+            _pendingWrite = res.content;
+            _fileEdit = { count: res.count,
+                          oldLines: FileTools.countLines(text),
+                          newLines: FileTools.countLines(res.content),
+                          diff: diff };
+            var rows = diff.rows;
+            if (meta.yolo) { _writeFileText(res.content); return; }
+            _raiseApprovalRequest({
+                kind: "edit", path: meta.path,
+                added: diff.added, removed: diff.removed,
+                diff: rows.slice(0, 40),
+                more: Math.max(0, rows.length - 40)
+            });
+            return;
+        }
+
+        if (_filePhase === "reread") {
+            if (text !== _fileSnapshot) {
+                _deliverError(meta.path + " changed while the edit was "
+                              + "waiting for approval — call read_file and "
+                              + "retry.");
+                return;
+            }
+            _writeFileText(_pendingWrite);
+            return;
+        }
+    }
+
+    // The user approved: run the operation that was parked.
+    function _fileApproved() {
+        var meta = _fileMeta;
+        if (!meta) { _deliverError("File job lost its target."); return; }
+        jobTimer.start();
+        if (meta.tool === "read_file") {
+            _filePhase = "read";
+            _runCat();
+            return;
+        }
+        if (meta.tool === "edit_file") {
+            // Re-read and compare: never write over a stale view.
+            _filePhase = "reread";
+            _runCat();
+            return;
+        }
+        _fileWriteApproved();
+    }
+
+    function _fileWriteApproved() {
+        var meta = _fileMeta;
+        if (!meta) return;
+        if (meta.args.content.length === 0) {
+            // A zero-byte temp write would never reach the rename.
+            _filePhase = "truncate";
+            truncProc.command = ["truncate", "-s", "0", meta.path];
+            truncProc.running = true;
+            return;
+        }
+        _writeFileText(meta.args.content);
+    }
+
+    // Content → <path>.nexus-tmp → mv. Atomic on one filesystem.
+    function _writeFileText(content) {
+        _filePhase = "write";
+        _pendingWrite = content;
+        _fileSawChunk = false;
+        fileProc.command = ["tee", "--", _fileMeta.path + _tmpSuffix];
+        fileProc.stdinEnabled = true;
+        fileProc.running = true;
+        jobTimer.start();
+    }
+
+    function _onWriteDone(code) {
+        var meta = _fileMeta;
+        if (code !== 0) {
+            _deliverError("Could not write " + meta.path + " (exit " + code
+                          + ").");
+            return;
+        }
+        _filePhase = "move";
+        mvProc.command = ["mv", "--", meta.path + _tmpSuffix, meta.path];
+        mvProc.running = true;
+    }
+
+    function _onMoveDone(code) {
+        var meta = _fileMeta;
+        if (code !== 0) {
+            _deliverError("Could not replace " + meta.path + " (mv exit "
+                          + code + ").");
+            return;
+        }
+        if (meta.tool === "edit_file") {
+            var e = _fileEdit || { count: 1, oldLines: 0, newLines: 0, diff: null };
+            _deliverOk(FileTools.formatEditResult(meta.path, e.count,
+                                                  e.oldLines, e.newLines,
+                                                  e.diff));
+            return;
+        }
+        _deliverOk(FileTools.formatWriteResult(meta.path,
+                                               meta.args.content));
+    }
+
+    function _clearFileJob() {
+        _fileMeta = null;
+        _filePhase = "";
+        _fileSize = -1;
+        _fileSnapshot = "";
+        _fileEdit = null;
+        _pendingWrite = "";
+        _fileSawChunk = false;
     }
 
     function _runShell() {
@@ -184,6 +438,11 @@ Item {
         _approvalRequest = null;
         _shellMeta = null;
         _shellKilled = "";
+        _clearFileJob();
+        if (statProc.running) statProc.running = false;
+        if (fileProc.running) fileProc.running = false;
+        if (mvProc.running) mvProc.running = false;
+        if (truncProc.running) truncProc.running = false;
         if (fetcher.running) fetcher.running = false;
         if (_busy) {
             _busy = false;
@@ -206,6 +465,7 @@ Item {
         _shellMeta = null;
         _shellKilled = "";
         _shellStarted = 0;
+        _clearFileJob();
         if (root.onResult) {
             try { root.onResult(id, text, images || null); }
             catch (e) { console.warn("NEXUS_NATIVE: onResult threw:", e); }
@@ -225,6 +485,7 @@ Item {
         _currentArgs = null;
         _shellMeta = null;
         _shellKilled = "";
+        _clearFileJob();
         if (root.onError) {
             try { root.onError(id, message); }
             catch (e) { console.warn("NEXUS_NATIVE: onError threw:", e); }
@@ -381,6 +642,58 @@ Item {
             }
             // Old process fully dead — safe to start the next job.
             root._pump();
+        }
+    }
+
+    // File IO: argv only (never a shell), one process per phase.
+    Process {
+        id: statProc
+        command: ["true"]
+        stdout: StdioCollector { id: statOut }
+        onExited: (code, st) => root._onStatDone(code, statOut.text)
+    }
+
+    Process {
+        id: fileProc
+        command: ["true"]
+        stdinEnabled: false
+        onRunningChanged: {
+            if (running && root._pendingWrite && root._filePhase === "write") {
+                fileProc.write(root._pendingWrite);
+                fileProc.stdinEnabled = false;   // EOF, or tee waits forever
+                root._pendingWrite = "";
+            }
+        }
+        stdout: StdioCollector {
+            id: fileOut
+            onTextChanged: if (root._fileMeta) root._fileSawChunk = true
+        }
+        onExited: (code, st) => {
+            if (root._filePhase === "read" || root._filePhase === "readForDiff"
+                    || root._filePhase === "reread")
+                root._onCatDone(code);
+            else if (root._filePhase === "write")
+                root._onWriteDone(code);
+        }
+    }
+
+    Process {
+        id: mvProc
+        command: ["true"]
+        onExited: (code, st) => root._onMoveDone(code)
+    }
+
+    Process {
+        id: truncProc
+        command: ["true"]
+        onExited: (code, st) => {
+            if (root._filePhase !== "truncate") return;
+            if (code === 0)
+                root._deliverOk("Wrote 0 lines (0 B) to "
+                                + (root._fileMeta ? root._fileMeta.path : ""));
+            else
+                root._deliverError("Could not truncate the file (exit "
+                                   + code + ").");
         }
     }
 

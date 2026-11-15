@@ -5,7 +5,7 @@
 // they keep their raw name and the generic tool glyph.
 //
 // Pure JS so the mapping is unit-tested; the icons are Material Symbols
-// names used by DankIcon.
+// names used by DIcon.
 
 var TOOLS = {
     "web_search": { label: "Web Search", icon: "travel_explore" },
@@ -27,7 +27,7 @@ function label(name) {
     return meta ? meta.label : key;
 }
 
-// Glyph name for DankIcon.
+// Glyph name for DIcon.
 function icon(name) {
     var key = String(name || "");
     var meta = TOOLS[key];

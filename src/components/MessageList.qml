@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Window
 import qs.Common
+import qs.DCommon.Widgets
 import qs.Widgets
 
 ListView {
@@ -185,7 +186,7 @@ ListView {
         }
     }
 
-    ScrollBar.vertical: DankScrollbar {
+    ScrollBar.vertical: DScrollbar {
         onPressedChanged: if (pressed) list.unpin()
     }
 
@@ -209,7 +210,7 @@ ListView {
         border.width: 1
         border.color: Theme.outlineVariant
 
-        DankIcon {
+        DIcon {
             anchors.centerIn: parent
             name: "arrow_downward"
             size: 18

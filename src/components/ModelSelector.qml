@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import qs.Common
+import qs.DCommon.Widgets
 import qs.Widgets
 import "../lib/ModelIcons.js" as ModelIcons
 import "../lib/FuzzyMatch.js" as FuzzyMatch
@@ -112,10 +113,14 @@ Rectangle {
 
     // Generate a dynamic cache during model search that returns 
     // the same array instead of rebuild the list at every keystroke
-    property var _rowsCache: []
+    // Cache holder for rowsFor(). It is mutated in place, never
+    // reassigned: the ListView binds its model to rowsFor(), and a
+    // notified property written inside that call made Qt report a
+    // binding loop on every rebuild.
+    property var _rowsCache: ({ value: [] })
     function rowsFor(filter) {
         var rows = buildRows(filter);
-        var old = _rowsCache;
+        var old = _rowsCache.value;
         if (old.length === rows.length) {
             var same = true;
             for (var i = 0; i < rows.length; i++) {
@@ -134,7 +139,7 @@ Rectangle {
             }
             if (same) return old;
         }
-        _rowsCache = rows;
+        _rowsCache.value = rows;
         return rows;
     }
 
@@ -176,7 +181,7 @@ Rectangle {
                 Layout.maximumWidth: 180
             }
 
-            DankIcon {
+            DIcon {
                 name: modelPicker.visible ? "expand_more" : "expand_less"
                 size: 16
                 color: Theme.surfaceVariantText
@@ -211,7 +216,7 @@ Rectangle {
         anchors.bottom: parent.bottom
         width: 36
 
-        DankIcon {
+        DIcon {
             anchors.centerIn: parent
             name: "instant_mix"
             size: 18
@@ -365,7 +370,7 @@ Rectangle {
 
                     // Collapse chevron (anchored right; the Row is a
                     // positioner and can't host it).
-                    DankIcon {
+                    DIcon {
                         visible: !rowDelegate.isModelRow
                                  && rowDelegate.rowPid.length > 0
                         anchors.right: parent.right
@@ -429,7 +434,7 @@ Rectangle {
                                     font.pixelSize: 13
                                     elide: Text.ElideRight
                                 }
-                                DankIcon {
+                                DIcon {
                                     visible: rowDelegate.rowActive
                                     name: "check"
                                     size: 16
@@ -460,7 +465,7 @@ Rectangle {
                                         rowDelegate.rowModelId)
                             }
 
-                            DankIcon {
+                            DIcon {
                                 anchors.centerIn: parent
                                 name: "push_pin"
                                 size: 16
@@ -491,14 +496,14 @@ Rectangle {
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 6
-                DankTextField {
+                DTextField {
                     id: manualEntry
                     Layout.fillWidth: true
                     placeholderText: "Search model"
                     leftIconName: "search"
                     showClearButton: true
                 }
-                DankButton {
+                DButton {
                     iconName: "check"
                     text: ""
                     buttonHeight: 36
@@ -590,7 +595,7 @@ Rectangle {
             }
         }
 
-        DankIcon {
+        DIcon {
             id: checkIcon
             anchors.left: parent.left
             anchors.leftMargin: 12
@@ -623,7 +628,7 @@ Rectangle {
                     elide: Text.ElideRight
                 }
 
-                // DankTextField hardcodes left alignment; this minimal
+                // DTextField hardcodes left alignment; this minimal
                 // field gives us right-aligned numeric input.
                 Rectangle {
                     id: valueBox
