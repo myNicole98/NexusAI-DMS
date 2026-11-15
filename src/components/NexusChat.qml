@@ -158,7 +158,7 @@ Item {
 
                         DankIcon {
                             anchors.verticalCenter: parent.verticalCenter
-                            name: "language"
+                            name: "home_repair_service"
                             size: 14
                             color: Theme.primary
                         }
@@ -468,6 +468,55 @@ Item {
                 }
             }
 
+            // Native tools switch (web_search / webfetch /
+            // take_screenshot): toolbox icon, primary when on. Same chip
+            // recipe as the MCP toggle. Sits LEFT of the MCP tools chip:
+            // native tools are always available, MCP is per-server.
+            Rectangle {
+                id: webChip
+                Layout.alignment: Qt.AlignVCenter
+                implicitWidth: 34
+                implicitHeight: 34
+                radius: 8
+                color: Theme.withAlpha(Theme.surfaceContainerHigh, 0.5)
+
+                readonly property bool on: chat.service
+                    ? chat.service.webToolsEnabled : false
+
+                Rectangle {
+                    anchors.fill: parent
+                    radius: parent.radius
+                    color: Theme.withAlpha(Theme.surfaceContainerHighest, 0.5)
+                    opacity: webHover.hovered ? 1 : 0
+                    Behavior on opacity { NumberAnimation { duration: 250 } }
+                }
+
+                DankIcon {
+                    anchors.centerIn: parent
+                    name: "home_repair_service"
+                    size: 18
+                    filled: webChip.on
+                    color: webChip.on || webHover.hovered
+                           ? Theme.primary : Theme.surfaceVariantText
+                    Behavior on color { ColorAnimation { duration: 250 } }
+                }
+
+                HoverHandler {
+                    id: webHover
+                    cursorShape: Qt.PointingHandCursor
+                    onHoveredChanged: webTip.hovering = hovered
+                }
+
+                TapHandler {
+                    onTapped: {
+                        webTip.close();
+                        if (chat.service)
+                            chat.service.setWebToolsEnabled(
+                                !chat.service.webToolsEnabled);
+                    }
+                }
+            }
+
             // MCP tools master switch: construction icon, primary when
             // tools are on. Same chip shape and hover treatment as the
             // model selector's zones (overlay fade + pointing cursor).
@@ -516,53 +565,6 @@ Item {
                 }
             }
 
-            // Native web tools switch (web_search / webfetch): language
-            // icon, primary when on. Same chip recipe as the MCP toggle.
-            Rectangle {
-                id: webChip
-                Layout.alignment: Qt.AlignVCenter
-                implicitWidth: 34
-                implicitHeight: 34
-                radius: 8
-                color: Theme.withAlpha(Theme.surfaceContainerHigh, 0.5)
-
-                readonly property bool on: chat.service
-                    ? chat.service.webToolsEnabled : false
-
-                Rectangle {
-                    anchors.fill: parent
-                    radius: parent.radius
-                    color: Theme.withAlpha(Theme.surfaceContainerHighest, 0.5)
-                    opacity: webHover.hovered ? 1 : 0
-                    Behavior on opacity { NumberAnimation { duration: 250 } }
-                }
-
-                DankIcon {
-                    anchors.centerIn: parent
-                    name: "language"
-                    size: 18
-                    filled: webChip.on
-                    color: webChip.on || webHover.hovered
-                           ? Theme.primary : Theme.surfaceVariantText
-                    Behavior on color { ColorAnimation { duration: 250 } }
-                }
-
-                HoverHandler {
-                    id: webHover
-                    cursorShape: Qt.PointingHandCursor
-                    onHoveredChanged: webTip.hovering = hovered
-                }
-
-                TapHandler {
-                    onTapped: {
-                        webTip.close();
-                        if (chat.service)
-                            chat.service.setWebToolsEnabled(
-                                !chat.service.webToolsEnabled);
-                    }
-                }
-            }
-
                 Item { Layout.fillWidth: true }
             }
 
@@ -599,7 +601,7 @@ Item {
     BubbleTip {
         id: webTip
         parent: webChip
-        tipText: "Enable native tools (search, fetch, screen capture)"
+        tipText: "Enable native tools"
     }
 
     // Settings view: fills the panel, on top of the chat, opened from
