@@ -221,6 +221,21 @@ function imagesForOllama(images) {
     return out;
 }
 
+// Marker text for a tool-result image turn on the wires that cannot
+// attach the image to the tool message itself.
+var TOOL_IMAGE_TEXT = "[Image from take_screenshot]";
+
+// A round can carry several tool results. OpenAI and Ollama cannot put
+// an image on a tool message, and a user turn between two tool messages
+// is invalid (OpenAI) / order-breaking (Ollama), so images from the whole
+// contiguous tool run ride ONE user message emitted after the last result.
+function toolImageMessage(format, images) {
+    if (format === "ollama")
+        return { role: "user", content: TOOL_IMAGE_TEXT,
+                 images: imagesForOllama(images) };
+    return { role: "user", content: openaiImageParts(images, TOOL_IMAGE_TEXT) };
+}
+
 // Map conversation records ({role, content, state}) to a format-
 // agnostic payload: trimmed system string + history messages. User
 // messages always pass; assistant messages only when state === "done".
@@ -423,11 +438,19 @@ function buildChatRequest(instance, opts) {
         for (i = 0; i < payload.messages.length; i++) {
             var tm = payload.messages[i];
             if (tm.role === "tool") {
-                amsgs.push({ role: "user", content: [{
-                    type: "tool_result",
-                    tool_use_id: tm.tool_call_id || "",
-                    content: tm.content || ""
-                }] });
+                var timg = sanitizeImages(tm.images);
+                var ttext = tm.content || "";
+                var tresult = { type: "tool_result",
+                                tool_use_id: tm.tool_call_id || "",
+                                content: ttext };
+                if (timg.length > 0) {
+                    // Anthropic accepts image blocks inside the result
+                    // itself — no extra user turn, no ordering problem.
+                    var tblocks = [];
+                    if (ttext) tblocks.push({ type: "text", text: ttext });
+                    tresult.content = tblocks.concat(anthropicContent(timg, ""));
+                }
+                amsgs.push({ role: "user", content: [tresult] });
             } else if (tm.tool_calls && tm.tool_calls.length > 0) {
                 var blocks = [];
                 if (tm.content && tm.content.length > 0)
@@ -491,6 +514,10 @@ function buildChatRequest(instance, opts) {
                     name: gm.name || "",
                     response: { result: gm.content || "" }
                 } });
+                // functionResponse is JSON-only: the image rides as an
+                // extra inline_data part on the SAME user turn.
+                var gimg = sanitizeImages(gm.images);
+                if (gimg.length > 0) parts = parts.concat(geminiParts(gimg, ""));
                 contents.push({ role: "user", parts: parts });
             } else if (gm.role === "user"
                        && sanitizeImages(gm.images).length > 0) {
@@ -515,6 +542,7 @@ function buildChatRequest(instance, opts) {
         // options.num_ctx (/v1 pins the default context).
         url = stripVersion(base, false) + "/api/chat";
         var omsgs = [];
+        var pendingImgs = [];
         if (payload.system) omsgs.push({ role: "system", content: payload.system });
         for (i = 0; i < payload.messages.length; i++) {
             var nm = payload.messages[i];
@@ -532,17 +560,32 @@ function buildChatRequest(instance, opts) {
                              tool_calls: ocalls });
             } else if (nm.role === "tool") {
                 // Results ride as plain tool messages in call order —
-                // ollama matches them by order, not by id.
+                // ollama matches them by order, not by id. Images cannot
+                // ride on the tool message, so they are buffered for the
+                // trailing user turn after the block.
+                var nimg = sanitizeImages(nm.images);
+                for (var ni = 0; ni < nimg.length; ni++) pendingImgs.push(nimg[ni]);
                 omsgs.push({ role: "tool", content: nm.content || "" });
+                continue;
             } else if (nm.role === "user"
                        && sanitizeImages(nm.images).length > 0) {
+                if (pendingImgs.length > 0) {
+                    omsgs.push(toolImageMessage("ollama", pendingImgs));
+                    pendingImgs = [];
+                }
                 omsgs.push({ role: "user", content: nm.content || "",
                              images: imagesForOllama(sanitizeImages(nm.images)) });
             } else {
+                if (pendingImgs.length > 0) {
+                    omsgs.push(toolImageMessage("ollama", pendingImgs));
+                    pendingImgs = [];
+                }
                 omsgs.push({ role: nm.role === "assistant" ? "assistant" : "user",
                              content: nm.content });
             }
         }
+        if (pendingImgs.length > 0)
+            omsgs.push(toolImageMessage("ollama", pendingImgs));
         body = { model: model, messages: omsgs, stream: stream };
         var oopts = {};
         if (opts.numCtx > 0) oopts.num_ctx = opts.numCtx;
@@ -554,11 +597,26 @@ function buildChatRequest(instance, opts) {
     } else {
         url = chatUrl(base);
         var msgs = [];
+        var pendingOpenaiImgs = [];
         if (payload.system) msgs.push({ role: "system", content: payload.system });
         // User turns with images become multipart content arrays; the
         // neutral `images` key itself never rides into the wire body.
+        // Tool-result images cannot ride on a tool message: they are
+        // buffered and emitted as ONE user turn after the tool block.
         for (i = 0; i < payload.messages.length; i++) {
             var om = payload.messages[i];
+            if (om.role === "tool") {
+                var tpi = sanitizeImages(om.images);
+                for (var tp = 0; tp < tpi.length; tp++)
+                    pendingOpenaiImgs.push(tpi[tp]);
+                msgs.push({ role: "tool", tool_call_id: om.tool_call_id || "",
+                            content: om.content || "" });
+                continue;
+            }
+            if (pendingOpenaiImgs.length > 0) {
+                msgs.push(toolImageMessage("openai", pendingOpenaiImgs));
+                pendingOpenaiImgs = [];
+            }
             var oi = om.role === "user" ? sanitizeImages(om.images) : [];
             if (oi.length > 0)
                 msgs.push({ role: "user",
@@ -566,6 +624,8 @@ function buildChatRequest(instance, opts) {
             else
                 msgs.push(om);
         }
+        if (pendingOpenaiImgs.length > 0)
+            msgs.push(toolImageMessage("openai", pendingOpenaiImgs));
         body = { model: model, messages: messagesForOpenai(msgs) };
         if (stream) {
             body.stream = true;
