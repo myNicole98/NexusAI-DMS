@@ -8,6 +8,7 @@ import qs.DCommon.Widgets
 import qs.Widgets
 import "../lib/Markdown.js" as Markdown
 import "../lib/SyntaxHighlight.js" as SyntaxHighlight
+import "../lib/TextReveal.js" as TextReveal
 import "../lib/ModelIcons.js" as ModelIcons
 import "../lib/NativeToolMeta.js" as NativeToolMeta
 
@@ -485,17 +486,18 @@ Rectangle {
 
     // Read msgState directly, never the derived isStreaming binding —
     // inside change handlers QML serves stale dependent values.
+    // Word-aligned reveal: advance only through the last COMPLETED word
+    // (TextReveal.cut), so a fragment never fades twice — an unfinished
+    // trailing token holds until its whitespace lands, and finalize
+    // shows the remainder instantly.
     function revealTick() {
         if (isUser || msgState !== "streaming") return;
-        if (shownText.length >= content.length
-                && shownThinking.length >= thinking.length) return;
         var prevC = shownText.length;
         var prevT = shownThinking.length;
         // render cap: ≤flushChars new chars enter the layout per tick
-        shownText = content.substring(
-            0, Math.min(content.length, shownText.length + flushChars));
-        shownThinking = thinking.substring(
-            0, Math.min(thinking.length, shownThinking.length + flushChars));
+        shownText = content.substring(0, TextReveal.cut(content, prevC, flushChars));
+        shownThinking = thinking.substring(0, TextReveal.cut(thinking, prevT, flushChars));
+        if (shownText.length === prevC && shownThinking.length === prevT) return;
         flushBatches(prevC, prevT);
         _fadeStartMs = Date.now();
         _thinkFadeStartMs = Date.now();
