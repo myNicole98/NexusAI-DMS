@@ -55,10 +55,11 @@ function _stepItem(entry, live, srcIdx) {
     return item;
 }
 
-function group(flow, toolLog, liveIndex, labelOf) {
+function group(flow, toolLog, liveIndex, labelOf, contentText) {
     var src = Array.isArray(flow) ? flow : [];
     var label = typeof labelOf === "function" ? labelOf : _str;
     var live = typeof liveIndex === "number" ? liveIndex : -1;
+    var content = typeof contentText === "string" ? contentText : null;
     var out = [];
     var block = null;
 
@@ -77,6 +78,19 @@ function group(flow, toolLog, liveIndex, labelOf) {
         var e = src[i];
         if (!e) continue;
         if (e.t === "x") {
+            // A blank segment is not the model speaking. A lone newline
+            // before a tool call is common, and treating it as answer text
+            // split one working phase into two rows (and rendered an empty
+            // text block). When the caller passes the text, blank segments
+            // neither split the run nor become segments.
+            if (content !== null
+                    && typeof e.a === "number" && typeof e.b === "number"
+                    && content.substring(e.a, e.b).trim() === "") {
+                // Still the live entry: keep the sweep on the block it
+                // belongs to (the row must not read as settled mid-stream).
+                if (block && i === live) block.live = true;
+                continue;
+            }
             closeBlock();
             var seg = { t: "x", a: e.a, b: e.b, srcIdx: i, live: i === live };
             out.push(seg);

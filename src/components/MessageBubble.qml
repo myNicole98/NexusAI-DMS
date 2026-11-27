@@ -239,7 +239,7 @@ Rectangle {
         }
         return ActivityModel.group(prepared, bubble.toolLogArr,
             streaming && prepared.length > 0 ? prepared.length - 1 : -1,
-            NativeToolMeta.label);
+            NativeToolMeta.label, bubble.content);
     }
 
     // Settled-render cache: closed boxes/segments re-evaluate their
