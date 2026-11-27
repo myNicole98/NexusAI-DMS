@@ -19,7 +19,11 @@ Item {
     property string _thinking: ""
     property string _lineBuffer: ""
     property string _tagBuffer: ""
-    property bool _insideThinkTag: false
+    // Which inline block is open: "" | "think" | "narrate".
+    property string _tagState: ""
+    // The model's own status lines, each terminated with "\n" by the parser
+    // so lines stay separable for the activity row's label.
+    property string _narration: ""
     // Generation time excluding tool-call waits (see _pauseGeneration).
     property real _genMs: 0
     property real _genStartMs: 0
@@ -28,6 +32,9 @@ Item {
 
     signal streamContentUpdated(string streamId, string delta)
     signal streamThinkingUpdated(string streamId, string delta)
+    // One chunk of the model's in-band status line(s) — never part of the
+    // answer, never sent back to the provider.
+    signal streamNarration(string streamId, string delta)
     signal streamActivity(string streamId)
     // A tool call still being streamed: friendly name + argument chars so
     // far. Lets the chat show "Writing Shell… 1,234 chars" instead of
@@ -97,7 +104,8 @@ Item {
         _thinking = "";
         _lineBuffer = "";
         _tagBuffer = "";
-        _insideThinkTag = false;
+        _tagState = "";
+        _narration = "";
         _genMs = 0;
         _genStartMs = 0;
         _deltaCount = 0;
@@ -185,8 +193,9 @@ Item {
 
     function _flushTagBuffer() {
         if (_tagBuffer.length === 0) return;
-        if (_insideThinkTag) { _thinking += _tagBuffer; streamThinkingUpdated(activeStreamId, _tagBuffer); }
-        else { _content += _tagBuffer; streamContentUpdated(activeStreamId, _tagBuffer); }
+        if (_tagState === "think") _thinkingDelta(activeStreamId, _tagBuffer);
+        else if (_tagState === "narrate") _narrationDelta(activeStreamId, _tagBuffer);
+        else _contentDelta(activeStreamId, _tagBuffer);
         _tagBuffer = "";
     }
 
@@ -206,6 +215,18 @@ Item {
         _deltaCount++;
         _thinking += text;
         streamThinkingUpdated(id, text);
+    }
+
+    // Narration is proof the provider is producing output (it feeds the
+    // liveness clock), but never the answer: it does not touch _content and
+    // is outside the runaway guard's length check.
+    function _narrationDelta(id, text) {
+        if (!text) return;
+        if (_genStartMs === 0) _genStartMs = Date.now();
+        _lastDeltaMs = Date.now();
+        _deltaCount++;
+        _narration += text;
+        streamNarration(id, text);
     }
 
     // Stop the generation clock during a tool wait.
@@ -269,9 +290,11 @@ Item {
             if (d.thinking) _thinkingDelta(activeStreamId, d.thinking);
 
             if (d.content) {
-                var routed = StreamParser.routeThinkTags(d.content, _tagBuffer, _insideThinkTag);
+                var routed = StreamParser.routeStreamTags(d.content, _tagBuffer, _tagState);
                 _tagBuffer = routed.tagBuffer;
-                _insideThinkTag = routed.insideThinkTag;
+                _tagState = routed.state;
+                for (var n = 0; n < routed.narrateParts.length; n++)
+                    _narrationDelta(activeStreamId, routed.narrateParts[n]);
                 for (var t = 0; t < routed.thinkingParts.length; t++)
                     _thinkingDelta(activeStreamId, routed.thinkingParts[t]);
                 for (var c = 0; c < routed.contentParts.length; c++)
@@ -303,7 +326,9 @@ Item {
             parsed.status >= 200 && parsed.status < 400 && parsed.body) {
             var fallback = StreamParser.extractNonStreamingText(parsed.body, root.format);
             if (fallback) {
-                var routed = StreamParser.routeThinkTags(fallback, "", false);
+                var routed = StreamParser.routeStreamTags(fallback, "", "");
+                for (var n = 0; n < routed.narrateParts.length; n++)
+                    _narrationDelta(activeStreamId, routed.narrateParts[n]);
                 for (var t = 0; t < routed.thinkingParts.length; t++)
                     _thinkingDelta(activeStreamId, routed.thinkingParts[t]);
                 for (var c = 0; c < routed.contentParts.length; c++)
@@ -332,7 +357,8 @@ Item {
         }
 
         if (isStreaming) {
-            if (!_seenToolCalls && _content.length === 0 && _thinking.length === 0) {
+            if (!_seenToolCalls && _content.length === 0 && _thinking.length === 0
+                    && _narration.length === 0) {
                 _fail("No response received.\nCheck the base URL and model, and that the server is reachable.");
                 return;
             }
@@ -346,7 +372,7 @@ Item {
         if (_seenToolCalls) return;
         var id = activeStreamId;
         _flushTagBuffer();
-        _insideThinkTag = false;
+        _tagState = "";
         _pauseGeneration();          // close clock
         isStreaming = false;
         activeStreamId = "";
@@ -356,6 +382,7 @@ Item {
     function _fail(message) {
         if (!isStreaming) return;
         var id = activeStreamId;
+        _tagState = "";
         isStreaming = false;
         activeStreamId = "";
         streamError(id, message);
@@ -473,6 +500,11 @@ Item {
         _pendingToolCalls = [];
         _allToolCalls = [];
         _toolAcc = {};
+        // A round boundary ends any inline block: an unterminated
+        // <narrate> (or a half-buffered tag) must not swallow the next
+        // round's first line into narration.
+        _tagBuffer = "";
+        _tagState = "";
         streamToolRoundReady(activeStreamId, updated);
     }
 
