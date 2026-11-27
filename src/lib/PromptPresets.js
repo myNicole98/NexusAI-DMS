@@ -32,3 +32,14 @@ function detect(text) {
         if (PRESETS[i].text && PRESETS[i].text === t) return PRESETS[i].id;
     return "custom";
 }
+
+// The activity-line convention, appended whenever tools are live: the
+// client routes these tags into the chat's status row and strips them from
+// the answer, so the model must treat them as a status channel, not prose.
+function narrationInstruction() {
+    return "Before each tool call and whenever your work changes direction, emit one\n"
+        + "short status line in <narrate>…</narrate>: plain text, under 80 characters,\n"
+        + "no markdown, no tool names in backticks. It is a status for the user, never\n"
+        + "part of your answer. Those tags are reserved; do not use them inside code\n"
+        + "blocks.";
+}
