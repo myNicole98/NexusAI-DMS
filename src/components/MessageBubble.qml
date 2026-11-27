@@ -386,7 +386,10 @@ Rectangle {
     }
 
     // Splits rendered html at the batch start and returns the initial
-    // faded html; skips the fade when no safe anchor exists.
+    // faded html; when no safe anchor exists (a spaceless-script run
+    // walks back to 0, or the block splice finds no anchor) renders
+    // the text UN-faded — never blank, and a fadeless region cannot
+    // re-dim, so no blink.
     function _fadeSplit(cache, text, batchStart) {
         var ph = "\x01F\x01";   // 3 chars — suffix must cut at ph.length
         var i = batchStart;
@@ -394,11 +397,13 @@ Rectangle {
         while (i > 0 && !/\s/.test(text[i - 1])) i--;
         var head = Markdown.markdownToHtml(text.substring(0, i),
                                            mdColors, _highlight);
-        if (!head) return { prefix: "", tail: "", suffix: "", html: head };
+        if (!head) return { prefix: "", tail: "", suffix: "",
+                            html: Markdown.markdownToHtml(text, mdColors, _highlight) };
         var tail = Markdown.escapeHtml(text.substring(i));
         var spliced = Markdown.spliceIntoLastBlock(head, ph);
         var cut = spliced.indexOf(ph);
-        if (cut < 0) return { prefix: "", tail: "", suffix: "", html: head };
+        if (cut < 0) return { prefix: "", tail: "", suffix: "",
+                              html: Markdown.markdownToHtml(text, mdColors, _highlight) };
         var parts = {
             prefix: spliced.substring(0, cut),
             tail: tail,
