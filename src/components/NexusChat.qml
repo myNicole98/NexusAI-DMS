@@ -79,14 +79,20 @@ Item {
             // Status chips, bottom-left of the chat box just above the
             // composer gap: MCP toolset count, the native web tools
             // indicator, and bash access. All three only show on an empty
-            // conversation (they fade away once the chat starts).
-            Row {
+            // conversation (they fade away once the chat starts). A Flow,
+            // not a Row: three chips are wider than a narrow panel and
+            // must wrap to a second line instead of running off the edge
+            // (the surface clips, so overflow reads as a cut-off chip).
+            Flow {
                 id: statusChips
                 anchors.left: parent.left
+                anchors.right: parent.right
                 anchors.bottom: parent.bottom
                 anchors.leftMargin: 10
+                anchors.rightMargin: 10
                 anchors.bottomMargin: 8
                 spacing: 8
+                flow: Flow.LeftToRight
 
                 // Active-toolset chip: counts MCP servers currently
                 // contributing tools; only shows when that's > 0.
@@ -186,16 +192,21 @@ Item {
 
                 // Shell chip: bash access is its own master switch, so it
                 // gets its own pill — without one a live bash toolset reads
-                // as "nothing enabled". Error-tinted only when YOLO is armed
-                // AND bash is on: a remembered YOLO flag with bash off can
-                // run nothing, and must not dress the bar up as danger.
+                // as "nothing enabled".
                 Rectangle {
                     id: shellStatusChip
                     readonly property bool on: chat.service
                         ? chat.service.shellEnabled : false
+                    // Deliberately the YOLO flag alone, not `on && yolo`:
+                    // switching bash off would otherwise rewrite this label
+                    // and tint mid fade-out ("Bash Access — YOLO" flipped to
+                    // "Bash Access Enabled"). Visibility already keys on
+                    // `on` via `shown`, so an armed-but-off state can never
+                    // show the chip — only its outgoing frames keep their
+                    // appearance. (The composer's terminal icon keeps the
+                    // `on && yolo` tint: it stays put when bash goes off.)
                     readonly property bool yolo: chat.service
-                        ? chat.service.shellEnabled
-                          && chat.service.shellYoloEnabled : false
+                        ? chat.service.shellYoloEnabled : false
                     readonly property bool chatEmpty: chat.service
                         ? chat.service.messageCount === 0 : true
                     readonly property bool shown: on && chatEmpty
