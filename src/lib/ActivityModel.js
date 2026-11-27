@@ -20,7 +20,7 @@ function _str(s) {
 // A c entry becomes a chip item enriched from its tool-log row. Missing or
 // malformed rows yield empty identity rather than throwing — a half-written
 // draft entry is still a row the user can see.
-function _chipItem(entry, toolLog, labelOf, live) {
+function _chipItem(entry, toolLog, labelOf, live, srcIdx) {
     var row = (toolLog && entry && typeof entry.i === "number")
         ? toolLog[entry.i] : null;
     var name = row ? _str(row.name) : "";
@@ -29,6 +29,7 @@ function _chipItem(entry, toolLog, labelOf, live) {
     var item = {
         t: "c",
         i: entry ? entry.i : -1,
+        srcIdx: srcIdx,
         name: name,
         label: name ? labelOf(name) : "",
         state: row ? _str(row.state) : "",
@@ -40,9 +41,10 @@ function _chipItem(entry, toolLog, labelOf, live) {
 }
 
 // Plain entries (k / n) keep their offsets; the strings they index into are
-// the message's own `thinking` / `narration`.
-function _stepItem(entry, live) {
-    var item = { t: entry.t, a: entry.a, b: entry.b };
+// the message's own `thinking` / `narration`. `srcIdx` is the entry's place
+// in the flow, which the UI uses as its expansion key.
+function _stepItem(entry, live, srcIdx) {
+    var item = { t: entry.t, a: entry.a, b: entry.b, srcIdx: srcIdx };
     if (entry.t === "k") item.ms = entry.ms || 0;
     if (live) item.live = true;
     return item;
@@ -71,7 +73,7 @@ function group(flow, toolLog, liveIndex, labelOf) {
         if (!e) continue;
         if (e.t === "x") {
             closeBlock();
-            var seg = { t: "x", a: e.a, b: e.b, live: i === live };
+            var seg = { t: "x", a: e.a, b: e.b, srcIdx: i, live: i === live };
             out.push(seg);
             continue;
         }
@@ -81,8 +83,8 @@ function group(flow, toolLog, liveIndex, labelOf) {
         }
         var isLive = i === live;
         if (isLive) block.live = true;
-        block.items.push(e.t === "c" ? _chipItem(e, toolLog, label, isLive)
-            : _stepItem(e, isLive));
+        block.items.push(e.t === "c" ? _chipItem(e, toolLog, label, isLive, i)
+            : _stepItem(e, isLive, i));
     }
     closeBlock();
     return out;
