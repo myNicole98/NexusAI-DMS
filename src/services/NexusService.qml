@@ -11,6 +11,7 @@ import "../lib/McpTools.js" as McpTools
 import "../lib/WebTools.js" as WebTools
 import "../lib/ShellTools.js" as ShellTools
 import "../lib/FileTools.js" as FileTools
+import "../lib/ToolLogModel.js" as ToolLogModel
 import "../lib/ContextWindows.js" as ContextWindows
 import "../lib/ChatHistory.js" as ChatHistory
 
@@ -1885,10 +1886,11 @@ Item {
     }
 
     // Tool call log: one entry per call, running → ok | error.
-    // toolLog is a JSON string (ListModel role limitation).
-    // `draft` entries are the live "writing…" state of a call whose
-    // arguments are still streaming; the real dispatch upgrades the same
-    // entry instead of adding a second chip.
+    // toolLog is a JSON string (ListModel role limitation). The entry
+    // bookkeeping — draft merge, in-place upgrade of a watched draft on
+    // dispatch, result stamping, ghost-drop — lives in the pure,
+    // node-tested `ToolLogModel`; this function only owns the ListModel
+    // row and the flow-chip plumbing around it.
     function _appendToolLog(id, toolName, phase, detail) {
         var i = _indexOfId(id);
         if (i < 0) return;
@@ -1897,84 +1899,48 @@ Item {
         try { log = raw ? JSON.parse(raw) : []; }
         catch (e) { log = []; }
         if (!Array.isArray(log)) log = [];
-        var next = log.slice();
         var name = String(toolName || "");
-        var lastIdx = next.length - 1;
-        var last = lastIdx >= 0 ? next[lastIdx] : null;
 
-        if (phase === "draft") {
-            var chars = parseInt(detail, 10);
-            if (!isFinite(chars)) chars = 0;
-            if (last && last.draft === true && last.name === name) {
-                last.chars = chars;
-                messagesModel.setProperty(i, "toolLog", JSON.stringify(next));
-                return;
+        if (phase === "draft" || phase === "call") {
+            var res;
+            if (phase === "draft") {
+                var chars = parseInt(detail, 10);
+                if (!isFinite(chars)) chars = 0;
+                res = ToolLogModel.applyDraft(log, name, chars, Date.now(), 0);
+            } else {
+                res = ToolLogModel.applyCall(log, name, Date.now(), 0);
             }
-            // First draft of this round: chip in the flow, live entry.
-            _flowClose();
-            _flow.push({ t: "c", i: next.length });
-            _flowPhase = "none";
-            _flowDirty = true;
-            _flushStreamBuffer();
-            next.push({ name: name, state: "running", draft: true, chars: chars,
-                        detail: "", startMs: Date.now(), endMs: 0,
-                        thinkingAt: messagesModel.get(i).thinking.length });
-            messagesModel.setProperty(i, "toolLog", JSON.stringify(next));
-            return;
-        }
-
-        if (phase === "call") {
-            // Upgrade the draft chip in place — the call the user watched
-            // being written IS this call.
-            if (last && last.draft === true && last.name === name) {
-                last.draft = false;
-                last.chars = 0;
-                last.startMs = Date.now();
-                messagesModel.setProperty(i, "toolLog", JSON.stringify(next));
+            if (res.chip < 0) {
+                // Merged into the open draft, or upgraded it in place:
+                // no new chip — the flow entry already points here.
+                messagesModel.setProperty(i, "toolLog", JSON.stringify(log));
                 return;
             }
             // Flow: close the current phase and record the chip; the
             // next delta opens a fresh phase (tool rounds relaunch).
             _flowClose();
-            _flow.push({ t: "c", i: next.length });
+            _flow.push({ t: "c", i: res.chip });
             _flowPhase = "none";
             _flowDirty = true;
             // Flush AFTER the chip lands in the flow, so the chip is
             // visible for the whole tool execution (the next flush
             // would otherwise only happen once the model talks again).
             _flushStreamBuffer();
-            next.push({ name: name, state: "running", detail: "",
-                        startMs: Date.now(), endMs: 0,
-                        thinkingAt: messagesModel.get(i).thinking.length });
-        } else {
-            // finalize: most recent running entry with this name
-            var idx = -1;
-            for (var t = next.length - 1; t >= 0; t--)
-                if (next[t] && next[t].state === "running"
-                    && next[t].name === name) { idx = t; break; }
-            var entry = idx >= 0 ? JSON.parse(JSON.stringify(next[idx]))
-                                 : { name: name, state: "running", detail: "",
-                                      startMs: Date.now(), endMs: 0 };
-            entry.state = phase === "error" ? "error" : "ok";
-            entry.endMs = Date.now();
-            var text = String(detail || "");
-            
-            // Pretty-print JSON
-            try {
-                var pj = JSON.parse(text);
-                if (pj !== undefined && pj !== null)
-                    text = JSON.stringify(pj, null, 2);
-            } catch (e) { /* not JSON — shown as-is */ }
-            entry.detail = text.length > 20000 ? text.substring(0, 20000) + "…" : text;
-            if (idx >= 0) next[idx] = entry;
-            else next.push(entry);
+            res.entry.thinkingAt = messagesModel.get(i).thinking.length;
+            messagesModel.setProperty(i, "toolLog", JSON.stringify(log));
+            return;
         }
-        messagesModel.setProperty(i, "toolLog", JSON.stringify(next));
+
+        // finalize ("result" | "error"): stamp the open entry.
+        ToolLogModel.applyResult(log, name, phase === "error", detail, Date.now());
+        messagesModel.setProperty(i, "toolLog", JSON.stringify(log));
     }
 
     // A draft chip whose call never got dispatched (the provider dropped
     // the tool call, or the stream died mid-argument) must not stay in
     // the flow breathing forever. Called from every turn-ending path.
+    // The flow chips are remapped alongside (dropDrafts' index map), or
+    // every later chip would point at the wrong entry.
     function _dropDraftToolLog(id) {
         var i = _indexOfId(id);
         if (i < 0) return;
@@ -1983,14 +1949,11 @@ Item {
         try { log = raw ? JSON.parse(raw) : []; }
         catch (e) { return; }
         if (!Array.isArray(log) || log.length === 0) return;
-        var next = [];
-        var changed = false;
-        for (var k = 0; k < log.length; k++) {
-            if (log[k] && log[k].draft === true) { changed = true; continue; }
-            next.push(log[k]);
-        }
-        if (!changed) return;
-        messagesModel.setProperty(i, "toolLog", JSON.stringify(next));
+        var res = ToolLogModel.dropDrafts(log);
+        if (!res.changed) return;
+        messagesModel.setProperty(i, "toolLog", JSON.stringify(res.log));
+        _flow = ToolLogModel.remapFlow(_flow, res.remap);
+        _flowDirty = true;
     }
 
     function _armWatchdog() { streamWatchdog.start(); }

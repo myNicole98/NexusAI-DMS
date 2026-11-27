@@ -694,39 +694,47 @@ Rectangle {
             }
         }
 
-        // Streaming indicator before first content: a plain status
-        // label breathing toward the accent — same 750 ms cadence as
-        // the tool chip's in-flight pulse.
-        Text {
-            id: promptRow
+        // Streaming indicator before first content: the same travelling
+        // glyph highlight as the tool chips — the characters of the
+        // status label brighten as it passes left → right.
+        Rectangle {
+            id: promptChip
             visible: isStreaming && bubble.flowRender.length === 0
-            text: "Processing prompt"
-            font.pixelSize: 11
-
-            // 0 → 1 → 0 while the label shows; lerps the color toward
-            // the accent (k = 0.55, matching breatheColor on the chips).
-            property real breathe: 0
-            SequentialAnimation on breathe {
-                running: promptRow.visible
+            Layout.fillWidth: false
+            implicitWidth: promptLabel.implicitWidth + 12
+            implicitHeight: promptLabel.implicitHeight + 6
+            radius: 8
+            color: "transparent"
+            readonly property real half: Math.max(40, width * 0.35)
+            property real sweep: 0
+            SequentialAnimation on sweep {
+                running: promptChip.visible
                 loops: Animation.Infinite
                 NumberAnimation {
-                    from: 0; to: 1; duration: 750
+                    from: -promptChip.half
+                    to: promptChip.width + promptChip.half
+                    duration: 1500
                     easing.type: Easing.InOutSine
                 }
-                NumberAnimation {
-                    from: 1; to: 0; duration: 750
-                    easing.type: Easing.InOutSine
-                }
+                PauseAnimation { duration: 450 }
             }
-            color: {
-                var k = breathe * 0.55;
+            function colorAt(px) {
+                var k = Math.max(0, 1 - Math.abs(px - promptChip.sweep)
+                                 / promptChip.half);
+                k = k * k * 0.95;
                 var base = Theme.surfaceVariantText;
-                var accent = Theme.primary;
+                var acc = Theme.primary;
                 return Qt.rgba(
-                    base.r + (accent.r - base.r) * k,
-                    base.g + (accent.g - base.g) * k,
-                    base.b + (accent.b - base.b) * k,
-                    1);
+                    base.r + (acc.r - base.r) * k,
+                    base.g + (acc.g - base.g) * k,
+                    base.b + (acc.b - base.b) * k, 1);
+            }
+            SweepLabel {
+                id: promptLabel
+                anchors.centerIn: parent
+                label: "Processing prompt"
+                offsetX: promptLabel.x
+                colorAt: promptChip.colorAt
             }
         }
 
@@ -1320,6 +1328,43 @@ Rectangle {
         }
     }
 
+    // Reusable glyph-sweep label: each character of `label` is a Text
+    // laid out at the mono advance (measured from a hidden probe), and
+    // every glyph's color comes from `colorAt(px)` — px is the glyph
+    // center in the OWNER's coordinate space, so the icon slot and the
+    // label share one travelling highlight. Empty label → zero width.
+    component SweepLabel: Item {
+        id: sl
+        property string label: ""
+        property var colorAt: null
+        property real offsetX: 0
+        readonly property real adv: advProbe.implicitWidth / 2
+        implicitWidth: label.length * adv
+        implicitHeight: advProbe.implicitHeight
+
+        Text {
+            id: advProbe
+            text: "WW"
+            visible: false
+            font.pixelSize: 11
+            font.family: Theme.monoFontFamily
+        }
+        Repeater {
+            model: sl.label.length
+            delegate: Text {
+                required property int index
+                x: index * sl.adv
+                anchors.verticalCenter: parent.verticalCenter
+                text: sl.label.charAt(index)
+                color: sl.colorAt
+                    ? sl.colorAt(sl.offsetX + index * sl.adv + sl.adv / 2)
+                    : Theme.surfaceVariantText
+                font.pixelSize: 11
+                font.family: Theme.monoFontFamily
+            }
+        }
+    }
+
     Component {
         id: toolChipComp
 
@@ -1362,7 +1407,8 @@ Rectangle {
 
                 // Tool chip: generic label (real name is in the
                 // detail); hover crossfades the icon to a
-                // chevron; accent "breathing" while in flight.
+                // chevron; the in-flight highlight sweeps the glyphs
+                // themselves left → right.
                 Rectangle {
                     id: toolChip
                     Layout.fillWidth: false
@@ -1373,43 +1419,44 @@ Rectangle {
                         ? Theme.withAlpha(Theme.primary, 0.14) : "transparent"
                     Behavior on color { ColorAnimation { duration: 220 } }
 
-                    // 0 → 1 → 0, only while the call is in
-                    // flight. Lerps text/icon color toward
-                    // the accent for the "breathing" effect.
-                    property real breathe: 0
-                    SequentialAnimation on breathe {
-                        running: toolEntry.entry
-                            && toolEntry.entry.state === "running"
+                    // Highlight travel position (chip coordinates).
+                    // Color is computed per glyph from the sweep, so a
+                    // stamped chip rests at the plain text color the
+                    // moment `inFlight` goes false — nothing persists.
+                    readonly property bool inFlight: toolEntry.entry
+                        && toolEntry.entry.state === "running"
+                    readonly property real half: Math.max(40,
+                                                          toolChip.width * 0.30)
+                    property real sweep: 0
+                    SequentialAnimation on sweep {
+                        running: toolChip.inFlight
                         loops: Animation.Infinite
                         NumberAnimation {
-                            from: 0; to: 1; duration: 750
+                            from: -toolChip.half
+                            to: toolChip.width + toolChip.half
+                            duration: 1500
                             easing.type: Easing.InOutSine
                         }
-                        NumberAnimation {
-                            from: 1; to: 0; duration: 750
-                            easing.type: Easing.InOutSine
-                        }
+                        PauseAnimation { duration: 450 }
                     }
-
-                    function breatheColor(base, accent) {
-                        var k = toolChip.breathe * 0.55;
-                        return Qt.rgba(
-                            base.r + (accent.r - base.r) * k,
-                            base.g + (accent.g - base.g) * k,
-                            base.b + (accent.b - base.b) * k,
-                            1
-                        );
-                    }
-
-                    // Icon follows the text color and breathes
-                    // toward the accent while in flight.
-                    function iconColor() {
-                        var base = Theme.surfaceVariantText;
+                    function colorAt(px) {
                         if (chipHover.hovered) return Theme.primary;
-                        if (!toolEntry.entry
-                            || toolEntry.entry.state !== "running")
-                            return base;
-                        return toolChip.breatheColor(base, Theme.primary);
+                        if (!toolChip.inFlight) return Theme.surfaceVariantText;
+                        var k = Math.max(0, 1 - Math.abs(px - toolChip.sweep)
+                                         / toolChip.half);
+                        k = k * k * 0.95;
+                        var base = Theme.surfaceVariantText;
+                        var acc = Theme.primary;
+                        return Qt.rgba(
+                            base.r + (acc.r - base.r) * k,
+                            base.g + (acc.g - base.g) * k,
+                            base.b + (acc.b - base.b) * k, 1);
+                    }
+
+                    // Icon rides the same sweep at its own position.
+                    function iconColor() {
+                        return toolChip.colorAt(glyphSlot.x
+                                                + glyphSlot.width / 2);
                     }
 
                     HoverHandler { id: chipHover; cursorShape: Qt.PointingHandCursor }
@@ -1426,6 +1473,7 @@ Rectangle {
                         // Left slot: handyman glyph crossfading
                         // to a chevron on hover.
                         Item {
+                            id: glyphSlot
                             width: 16; height: 16
                             DIcon {
                                 anchors.centerIn: parent
@@ -1456,19 +1504,12 @@ Rectangle {
                             }
                         }
 
-                        Text {
-                            text: toolEntry.chipLabel
-                            color: {
-                                if (chipHover.hovered) return Theme.primary;
-                                return toolChip.breathe
-                                    ? toolChip.breatheColor(
-                                          Theme.surfaceVariantText,
-                                          Theme.primary)
-                                    : Theme.surfaceVariantText;
-                            }
-                            font.pixelSize: 11
-                            font.family: Theme.monoFontFamily
-                            elide: Text.ElideRight
+                        SweepLabel {
+                            label: toolEntry.chipLabel
+                            // Chip-space position of this label's first
+                            // glyph: the row's offset plus our own.
+                            offsetX: toolChipRow.x + x
+                            colorAt: toolChip.colorAt
                         }
                     }
                 }
