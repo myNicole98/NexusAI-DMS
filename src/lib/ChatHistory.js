@@ -55,7 +55,8 @@ function sanitizeForPersist(chat) {
             state: m.state === "streaming" ? "cancelled" : (m.state || "done"),
             stats: m.stats || "",
             timestamp: typeof m.timestamp === "number" ? m.timestamp : 0,
-            flow: m.flow || "[]"
+            flow: m.flow || "[]",
+            narration: m.narration || ""
         };
         if (m.role === "user") row.attachments = stripAttachments(m.attachments);
         msgs.push(row);
