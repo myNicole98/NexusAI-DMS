@@ -11,7 +11,10 @@ var TOOLS = {
     "web_search": { label: "Web Search", icon: "travel_explore" },
     "webfetch": { label: "Web Fetch", icon: "download" },
     "take_screenshot": { label: "Screenshot", icon: "photo_camera" },
-    "run_command": { label: "Shell", icon: "terminal" }
+    "run_command": { label: "Shell", icon: "terminal" },
+    "read_file": { label: "Read File", icon: "description" },
+    "write_file": { label: "Write File", icon: "save" },
+    "edit_file": { label: "Edit File", icon: "edit" }
 };
 
 var FALLBACK_ICON = "handyman";
