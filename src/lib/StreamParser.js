@@ -299,7 +299,8 @@ function couldStartTag(tail, tag) {
 // Route streamed text into content, thinking, or narration, tracking the
 // <think> and <narrate> tags that may be split across chunks. Newlines
 // directly after a tag are stripped. A <narrate> block is one status line:
-// it ends at its close tag OR at a newline, which is consumed. A stray
+// it ends at its close tag OR at a newline, and the line carries its "\n"
+// terminator so the sink can tell one status line from the next. A stray
 // </narrate> is dropped, and narrate tags inside a thinking block are
 // stripped without nesting — that text stays thinking. tagBuffer/state are
 // carried between calls; state is "", "think" or "narrate".
@@ -313,12 +314,29 @@ function routeStreamTags(text, tagBuffer, state) {
         state: state || ""
     };
     var input = (tagBuffer || "") + (text || "");
+    var emitted = false;      // this call has written the open line
+    var openedHere = false;   // …and the line began in this call
 
     function emit(s) {
         if (s.length === 0) return;
         if (res.state === "think") res.thinkingParts.push(s);
-        else if (res.state === "narrate") res.narrateParts.push(s);
+        else if (res.state === "narrate") { res.narrateParts.push(s); emitted = true; }
         else res.contentParts.push(s);
+    }
+
+    // Ends the narration line. A line that was already streamed in an
+    // earlier chunk still needs its terminator here; a block that never had
+    // any text emits nothing at all.
+    function closeNarration() {
+        if (res.state !== "narrate") return;
+        emit(plain); plain = "";
+        if (emitted || !openedHere) {
+            var last = res.narrateParts.length - 1;
+            if (emitted && last >= 0) res.narrateParts[last] += "\n";
+            else res.narrateParts.push("\n");
+        }
+        res.state = "";
+        emitted = false; openedHere = false;
     }
 
     function afterTag(i) {
@@ -332,25 +350,30 @@ function routeStreamTags(text, tagBuffer, state) {
             var rest = input.substring(i);
             if (rest.indexOf(NARRATE_OPEN) === 0) {
                 emit(plain); plain = "";
-                if (res.state !== "think") res.state = "narrate";
+                if (res.state !== "think") {
+                    res.state = "narrate";
+                    openedHere = true;
+                }
                 i = afterTag(i + NARRATE_OPEN.length);
                 continue;
             }
             if (rest.indexOf(NARRATE_CLOSE) === 0) {
-                emit(plain); plain = "";
-                if (res.state === "narrate") res.state = "";
+                if (res.state === "narrate") closeNarration();
+                else { emit(plain); plain = ""; }
                 i = afterTag(i + NARRATE_CLOSE.length);
                 continue;
             }
             if (res.state !== "think" && rest.indexOf(OPEN_TAG) === 0) {
                 emit(plain); plain = "";
                 res.state = "think";
+                emitted = false; openedHere = false;
                 i = afterTag(i + OPEN_TAG.length);
                 continue;
             }
             if (res.state === "think" && rest.indexOf(CLOSE_TAG) === 0) {
                 emit(plain); plain = "";
                 res.state = "";
+                emitted = false; openedHere = false;
                 i = afterTag(i + CLOSE_TAG.length);
                 continue;
             }
@@ -369,8 +392,7 @@ function routeStreamTags(text, tagBuffer, state) {
         }
         // The newline is the narration line's terminator.
         if (res.state === "narrate" && input[i] === "\n") {
-            emit(plain); plain = "";
-            res.state = "";
+            closeNarration();
             i++;
             continue;
         }
