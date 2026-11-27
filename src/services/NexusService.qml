@@ -1074,7 +1074,8 @@ Item {
             messagesModel.append({
                 id: _nextId(), role: "system", content:
                     "Add a provider and pick a model in settings.",
-                thinking: "", toolLog: "[]", flow: "[]", attachments: "[]",
+                thinking: "", toolLog: "[]", flow: "[]", narration: "",
+                attachments: "[]",
                 usage: "",
                 modelUsed: "", modelProviderId: "",
                 state: "error", stats: "", timestamp: Date.now()
@@ -1341,6 +1342,7 @@ Item {
             var m = messagesModel.get(i);
             out.push({ id: m.id, role: m.role, content: m.content,
                        thinking: m.thinking, toolLog: m.toolLog,
+                       flow: m.flow, narration: m.narration,
                        attachments: m.attachments, usage: m.usage,
                        modelUsed: m.modelUsed,
                        modelProviderId: m.modelProviderId,
@@ -1361,7 +1363,7 @@ Item {
             messagesModel.append({
                 id: m.id, role: m.role, content: m.content || "",
                 thinking: m.thinking || "", toolLog: m.toolLog || "[]",
-                flow: m.flow || "[]",
+                flow: m.flow || "[]", narration: m.narration || "",
                 attachments: m.attachments || "[]", usage: m.usage || "",
                 modelUsed: m.modelUsed || "",
                 modelProviderId: m.modelProviderId || "",
@@ -1674,6 +1676,7 @@ Item {
             // JSON strings — ListModel can't hold JS object arrays.
             toolLog: "[]",
             flow: "[]",
+            narration: "",
             attachments: "[]",
             usage: "",
             modelUsed: activeModel,
@@ -1681,6 +1684,15 @@ Item {
             state: state || "streaming", stats: "", timestamp: Date.now()
         };
     }    function _nextId() { return "m" + (++_idCounter); }
+
+    // The personality prompt, plus the status-line convention whenever
+    // tools are live: the activity row has nothing to say on a turn that
+    // can't call anything, so the instruction rides only real requests.
+    function effectiveSystemPrompt() {
+        if (getChatTools().length === 0) return systemPrompt;
+        var ins = PromptPresets.narrationInstruction();
+        return systemPrompt ? systemPrompt + "\n\n" + ins : ins;
+    }
 
     function _historyForRequest() {
         var out = [];
@@ -1708,10 +1720,11 @@ Item {
         // Raw history — buildApiPayload filters unfinished turns; the
         // same payload messages feed MCP tool rounds.
         var payloadMsgs = Providers.buildApiPayload(inst, {
-            systemPrompt: systemPrompt,
+            systemPrompt: effectiveSystemPrompt(),
             messages: _historyForRequest()
         }).messages;
         streamingStats = "";
+        streamHasActivity = false;
         streaming.begin(streamId);
         // Seed tool-round memory: without it a relaunch would start
         // with the assistant turn, which Gemini/Z.AI reject (400).
@@ -1735,7 +1748,7 @@ Item {
             messages: payloadMsgs,
             rawMessages: true,
             tools: toolsLive ? chatTools : null,
-            systemPrompt: systemPrompt,
+            systemPrompt: effectiveSystemPrompt(),
             temperature: useTemperature ? temperature : null,
             maxTokens: useMaxTokens ? maxTokens : 0,
             numCtx: (activeIsOllama && useContextWindow) ? numCtx : 0,
@@ -1771,18 +1784,37 @@ Item {
     property string _pendStreamId: ""
     property string _streamContent: ""
     property string _streamThinking: ""
+    property string _streamNarration: ""
+
+    // True once the streaming turn has produced anything worth collapsing
+    // into the activity row — thinking, a tool call, or a status line. A
+    // plain answer stream never sets it, so the floating "pondering" pill
+    // keeps covering the wait until real work appears.
+    property bool streamHasActivity: false
 
     // Chronological response structure ("flow" role): thinking boxes,
-    // text segments and tool chips in the order the model produced
-    // them. k/x entries hold [a,b) offsets into the thinking/content
-    // mirrors; c entries index into toolLog. Recorded at phase
-    // transitions and tool calls; flushed with the mirrors.
+    // status lines, text segments and tool chips in the order the model
+    // produced them. k/n/x entries hold [a,b) offsets into the
+    // thinking/narration/content mirrors; c entries index into toolLog.
+    // Recorded at phase transitions and tool calls; flushed with the mirrors.
     property var _flow: []
-    property string _flowPhase: "none"   // none | k (thinking) | x (text)
+    property string _flowPhase: "none"   // none | k (thinking) | n (status line) | x (text)
     property real _flowPhaseStartMs: 0
     // Own dirty flag: tool-call chips must flush even when the mirror
     // content is already clean (deltas stopped before the call).
     property bool _flowDirty: false
+
+    // A status line still being written when the turn ends must not settle
+    // into the row's label — a half sentence reads as a promise the model
+    // never finished (plan's Stop requirement). The open entry is dropped
+    // rather than closed; the text stays in the narration mirror.
+    function _dropOpenNarration() {
+        if (_flowPhase !== "n") return;
+        var e = _flow[_flow.length - 1];
+        if (e && e.t === "n") _flow.pop();
+        _flowPhase = "none";
+        _flowDirty = true;
+    }
 
     function _flowClose() {
         if (_flowPhase === "none") return;
@@ -1791,6 +1823,8 @@ Item {
             if (_flowPhase === "k") {
                 e.b = _streamThinking.length;
                 e.ms = Date.now() - _flowPhaseStartMs;
+            } else if (_flowPhase === "n") {
+                e.b = _streamNarration.length;
             } else if (_flowPhase === "x") {
                 e.b = _streamContent.length;
             }
@@ -1804,12 +1838,16 @@ Item {
             _flow.push({ t: "k", a: _streamThinking.length,
                          b: _streamThinking.length, ms: 0 });
             _flowPhaseStartMs = Date.now();
+        } else if (t === "n") {
+            _flow.push({ t: "n", a: _streamNarration.length,
+                         b: _streamNarration.length });
         } else {
             _flow.push({ t: "x", a: _streamContent.length,
                          b: _streamContent.length });
         }
         _flowPhase = t;
         _flowDirty = true;
+        if (t !== "x") streamHasActivity = true;
     }
 
     function _clearStreamBuffer() {
@@ -1817,9 +1855,11 @@ Item {
         _pendStreamId = "";
         _streamContent = "";
         _streamThinking = "";
+        _streamNarration = "";
         _flow = [];
         _flowPhase = "none";
         _flowDirty = false;
+        streamHasActivity = false;
     }
 
     function _flushStreamBuffer() {
@@ -1834,6 +1874,8 @@ Item {
             messagesModel.setProperty(i, "content", _streamContent);
         if (_streamThinking.length > 0)
             messagesModel.setProperty(i, "thinking", _streamThinking);
+        if (_streamNarration.length > 0)
+            messagesModel.setProperty(i, "narration", _streamNarration);
         // Persist the flow. The open (live) entry extends to the
         // current mirror lengths — never prune it for a stale b, or
         // the in-progress phase would vanish until it closes. Closed
@@ -1845,12 +1887,14 @@ Item {
             if (f === _flow.length - 1 && _flowPhase !== "none") {
                 if (_flowPhase === "k")
                     e = { t: "k", a: e.a, b: _streamThinking.length, ms: 0 };
+                else if (_flowPhase === "n")
+                    e = { t: "n", a: e.a, b: _streamNarration.length };
                 else
                     e = { t: "x", a: e.a, b: _streamContent.length };
                 if (e.b > e.a) flowOut.push(e);
                 continue;
             }
-            if ((e.t === "k" || e.t === "x") && e.b <= e.a) continue;
+            if ((e.t === "k" || e.t === "n" || e.t === "x") && e.b <= e.a) continue;
             flowOut.push(e);
         }
         messagesModel.setProperty(i, "flow", JSON.stringify(flowOut));
@@ -1869,6 +1913,7 @@ Item {
             _mirrorStreamId = id;
             _streamContent = "";
             _streamThinking = "";
+            _streamNarration = "";
             _flow = [];
             _flowPhase = "none";
         }
@@ -1887,6 +1932,7 @@ Item {
             _mirrorStreamId = id;
             _streamContent = "";
             _streamThinking = "";
+            _streamNarration = "";
             _flow = [];
             _flowPhase = "none";
         }
@@ -1895,6 +1941,37 @@ Item {
             _flowOpen("k");
         }
         _streamThinking += delta;
+        _pendStreamId = id;
+        if (!streamFlushTimer.running) streamFlushTimer.start();
+    }
+
+    // The model's own status lines. One flow entry per line: the "\n" the
+    // parser carries is the boundary, so the collapsed label advances on
+    // whole lines and never mid-word.
+    function _appendNarration(id, delta) {
+        if (!delta) return;
+        if (_mirrorStreamId !== id) {
+            _flushStreamBuffer();
+            _mirrorStreamId = id;
+            _streamContent = "";
+            _streamThinking = "";
+            _streamNarration = "";
+            _flow = [];
+            _flowPhase = "none";
+        }
+        var segs = delta.split("\n");
+        for (var s = 0; s < segs.length; s++) {
+            if (_flowPhase !== "n") {
+                _flowClose();
+                _flowOpen("n");
+            }
+            _streamNarration += segs[s];
+            if (s < segs.length - 1) {
+                _flowClose();                 // b stops before the terminator
+                _streamNarration += "\n";
+                _flowOpen("n");
+            }
+        }
         _pendStreamId = id;
         if (!streamFlushTimer.running) streamFlushTimer.start();
     }
@@ -1908,6 +1985,22 @@ Item {
     function _appendToolLog(id, toolName, phase, detail) {
         var i = _indexOfId(id);
         if (i < 0) return;
+        // Adopt the stream exactly like the content/thinking/narration
+        // append paths do. A turn that opens with a tool call (no text
+        // yet, the "model never narrates" case) otherwise flushes the
+        // PREVIOUS turn's mirror state into this row — and since the flow
+        // now persists, that would replace the previous answer's flow for
+        // good and leave it unrendered on reopen.
+        if (_mirrorStreamId !== id) {
+            _flushStreamBuffer();
+            _mirrorStreamId = id;
+            _streamContent = "";
+            _streamThinking = "";
+            _streamNarration = "";
+            _flow = [];
+            _flowPhase = "none";
+        }
+        streamHasActivity = true;
         var raw = messagesModel.get(i).toolLog;
         var log;
         try { log = raw ? JSON.parse(raw) : []; }
@@ -2125,6 +2218,7 @@ Item {
 
         onStreamContentUpdated: (streamId, delta) => root._appendContent(streamId, delta)
         onStreamThinkingUpdated: (streamId, delta) => root._appendThinking(streamId, delta)
+        onStreamNarration: (streamId, delta) => root._appendNarration(streamId, delta)
         onStreamActivity: (streamId) => root._stopWatchdog()
         onStreamToolDraft: (streamId, name, chars) =>
             root._appendToolLog(streamId, name, "draft", String(chars))
@@ -2171,7 +2265,9 @@ Item {
             root._stopWatchdog();
             root.streamingStats = "";
             root._dropDraftToolLog(streamId);
-            // Cancelled keeps the partial content — flush it.
+            // Cancelled keeps the partial content — flush it. A narration
+            // line cut mid-sentence is dropped, not settled as the label.
+            root._dropOpenNarration();
             root._flowClose();
             root._flushStreamBuffer();
             root._setMsg(streamId, { state: "cancelled", stats: stats });
