@@ -11,6 +11,7 @@ import "../lib/SyntaxHighlight.js" as SyntaxHighlight
 import "../lib/TextReveal.js" as TextReveal
 import "../lib/ModelIcons.js" as ModelIcons
 import "../lib/NativeToolMeta.js" as NativeToolMeta
+import "../lib/ActivityModel.js" as ActivityModel
 
 Rectangle {
     id: bubble
@@ -152,16 +153,18 @@ Rectangle {
         return Markdown.markdownToHtml(text, mdColors, _highlight, hoverUrl);
     }
 
-    // ── Chronological flow (interleaved pondering) ────────────────
+    // ── Chronological flow (grouped into activity rows) ───────────
     // The flow role records the response structure in production
-    // order: k = thinking box, x = text segment ([a,b) offsets into
-    // the thinking/content strings), c = tool chip (toolLog index).
-    // Each k renders its own collapsible pondering box; a chip
-    // directly following a box renders INSIDE it, otherwise inline.
-    // Messages without a flow (old chats) synthesize the legacy
-    // layout: one box with chips interleaved by thinkingAt, then the
-    // whole content.
+    // order: k = thinking box, n = one model-written status line,
+    // x = text segment, c = tool chip (toolLog index). k/n/x hold
+    // [a,b) offsets into the thinking/narration/content strings.
+    // Runs of work between text segments collapse into one activity
+    // row (ActivityModel.group); messages without a flow (old chats)
+    // synthesize the legacy layout: one box with chips interleaved by
+    // thinkingAt, then the whole content.
     property string flow: "[]"
+    // The model's own status lines (one per line, "\n"-terminated).
+    property string narration: ""
 
     readonly property var flowArr: {
         try { var v = JSON.parse(bubble.flow || "[]");
@@ -195,35 +198,48 @@ Rectangle {
         return segs;
     }
 
-    // Render model: chips right after a box are absorbed into it, and
-    // the LAST entry of an active stream is live — its range extends
-    // to the current string lengths (the service persists open
-    // entries with a stale b).
+    // Activity expansion state (flow index of the block → bool). Reassigned
+    // on toggle so var-property bindings re-evaluate.
+    property var _openActivity: ({})
+
+    function isActivityOpen(idx) {
+        return _openActivity[idx] === true;
+    }
+
+    function toggleActivity(idx) {
+        var m = Object.assign({}, _openActivity);
+        m[idx] = !isActivityOpen(idx);
+        _openActivity = m;
+    }
+
+    // Render model: the live entry's range extends to the current mirror
+    // length (the service persists open entries with a stale b), then the
+    // prepared entries collapse into one activity block per working phase.
     readonly property var flowRender: {
         var src = bubble.effectiveFlow;
         var streaming = bubble.msgState === "streaming";
-        var out = [];
+        var prepared = [];
         for (var i = 0; i < src.length; i++) {
             var e = src[i];
             if (!e) continue;
             var live = streaming && i === src.length - 1;
             if (e.t === "k") {
-                // Tool chips are ALWAYS their own row: a call issued out
-                // of a pondering box renders after it, never inside it.
-                // The turn reads think → tool → think → answer.
-                out.push({ t: "k", a: e.a,
-                           b: live ? bubble.thinking.length : e.b,
-                           ms: e.ms || 0, chips: [], live: live,
-                           srcIdx: i });
+                prepared.push({ t: "k", a: e.a,
+                                b: live ? bubble.thinking.length : e.b,
+                                ms: e.ms || 0 });
+            } else if (e.t === "n") {
+                prepared.push({ t: "n", a: e.a,
+                                b: live ? bubble.narration.length : e.b });
             } else if (e.t === "x") {
-                out.push({ t: "x", a: e.a,
-                           b: live ? bubble.content.length : e.b,
-                           live: live });
+                prepared.push({ t: "x", a: e.a,
+                                b: live ? bubble.content.length : e.b });
             } else if (e.t === "c") {
-                out.push({ t: "c", i: e.i, live: live });
+                prepared.push({ t: "c", i: e.i });
             }
         }
-        return out;
+        return ActivityModel.group(prepared, bubble.toolLogArr,
+            streaming && prepared.length > 0 ? prepared.length - 1 : -1,
+            NativeToolMeta.label);
     }
 
     // Settled-render cache: closed boxes/segments re-evaluate their
@@ -345,6 +361,19 @@ Rectangle {
         return "Pondered for " + Math.round(ms / 1000) + " seconds";
     }
 
+    // The collapsed line is model-written free text, and SweepLabel lays
+    // out one Text per character: clamp before it gets there. Cut on a
+    // code-point boundary so a surrogate pair (emoji) never splits.
+    function clampActivityLabel(s) {
+        var text = String(s || "");
+        var max = 90;
+        if (text.length <= max) return text;
+        var cut = max;
+        var code = text.charCodeAt(cut - 1);
+        if (code >= 0xD800 && code <= 0xDBFF) cut--;
+        return text.substring(0, cut) + "…";
+    }
+
     // ── Segmented body rendering + batch reveal ───────────────────
     // Output flushes in discrete batches, each tinted via
     // Markdown.spliceIntoLastBlock and brightening to full color over
@@ -421,8 +450,14 @@ Rectangle {
     // shownText/shownThinking (advanced ≤flushChars/tick).
     function flushBatches(contentFrom, thinkFrom) {
         var streaming = msgState === "streaming";
-        var live = (flowRender && flowRender.length > 0)
+        var last = (flowRender && flowRender.length > 0)
             ? flowRender[flowRender.length - 1] : null;
+        // The batch fade works on the live RAW entry: when the phase is
+        // still working, that entry sits inside the live activity block.
+        var live = last && last.t === "act"
+            ? (last.items && last.items.length > 0
+               ? last.items[last.items.length - 1] : null)
+            : last;
         segments = [];
         renderedThinkingHtml = "";
         if (isUser || !live) return;
@@ -658,9 +693,9 @@ Rectangle {
             }
         }
 
-        // Chronological flow: pondering boxes, text segments and
-        // tool chips in the order the model produced them. Count-based
-        // Repeater — delegates are reused across ticks.
+        // Chronological flow: one activity row per working phase, answer
+        // text as its own segment. Count-based Repeater — delegates are
+        // reused across ticks.
         Repeater {
             model: bubble.flowRender ? bubble.flowRender.length : 0
 
@@ -670,26 +705,12 @@ Rectangle {
                 readonly property var entry:
                     (bubble.flowRender && index < bubble.flowRender.length)
                     ? bubble.flowRender[index] : null
-                readonly property var chipEntry:
-                    entry && entry.t === "c"
-                        && entry.i < bubble.toolLogArr.length
-                    ? bubble.toolLogArr[entry.i] : null
                 Layout.fillWidth: true
                 sourceComponent:
-                    !entry ? textEntryComp
-                    : entry.t === "k" ? ponderBoxComp
-                    : entry.t === "c" ? toolChipComp
-                    : textEntryComp
+                    entry && entry.t === "act" ? activityRowComp : textEntryComp
                 onLoaded: {
-                    if (entry && entry.t === "c") {
-                        flowLoader.item.index = Qt.binding(
-                            function () { return flowLoader.entry.i; });
-                        flowLoader.item.entry = Qt.binding(
-                            function () { return flowLoader.chipEntry; });
-                    } else {
-                        flowLoader.item.entry = Qt.binding(
-                            function () { return flowLoader.entry; });
-                    }
+                    flowLoader.item.entry = Qt.binding(
+                        function () { return flowLoader.entry; });
                 }
             }
         }
@@ -1090,8 +1111,7 @@ Rectangle {
 
     // One pondering box per think entry: collapsible header chip
     // (live = "Pondering…", closed = stamped duration), capped
-    // auto-scrolling content, and the tool chips that were issued
-    // straight out of this thinking phase.
+    // auto-scrolling content. Rendered inside an expanded activity row.
     Component {
         id: ponderBoxComp
         ColumnLayout {
@@ -1169,8 +1189,7 @@ Rectangle {
 
             // Box content: 220px cap + smoothed height; auto-scroll
             // pinned to the bottom while this box is the live one,
-            // free after. Column so merged tool chips render inside
-            // the collapsible area.
+            // free after.
             Flickable {
                 id: pFlick
                 visible: ponderPane.expanded
@@ -1295,36 +1314,227 @@ Rectangle {
                                 ? Qt.PointingHandCursor : undefined
                         }
                     }
+                }
+            }
+        }
+    }
 
-                    // Tool chips issued straight out of this thinking
-                    // phase — rendered inside the box.
-                    Repeater {
-                        model: ponderPane.entry
-                            ? ponderPane.entry.chips.length : 0
+    // One working phase: a single collapsed status line — what the model
+    // said it was doing, or what its steps imply — that expands to the
+    // block's narration lines, pondering boxes and tool chips.
+    Component {
+        id: activityRowComp
 
-                        delegate: Loader {
-                            id: boxChipLoader
-                            required property int index
-                            readonly property int chipIdx:
-                                (ponderPane.entry
-                                 && index < ponderPane.entry.chips.length)
-                                ? ponderPane.entry.chips[index] : 0
-                            readonly property var chipEntry:
-                                (chipIdx >= 0
-                                 && chipIdx < bubble.toolLogArr.length)
-                                ? bubble.toolLogArr[chipIdx] : null
-                            width: pContent.width
-                            sourceComponent: toolChipComp
-                            onLoaded: {
-                                boxChipLoader.item.index = Qt.binding(
-                                    function () { return boxChipLoader.chipIdx; });
-                                boxChipLoader.item.entry = Qt.binding(
-                                    function () { return boxChipLoader.chipEntry; });
-                            }
+        ColumnLayout {
+            id: activityPane
+            property var entry: null
+            readonly property bool live: entry ? entry.live === true : false
+            readonly property int srcIdx: entry && entry.srcIdx !== undefined
+                ? entry.srcIdx : -1
+            readonly property bool expanded: bubble.isActivityOpen(srcIdx)
+
+            readonly property string label: {
+                var e = activityPane.entry;
+                if (!e) return "";
+                return bubble.clampActivityLabel(
+                    ActivityModel.narrationLabel(e, bubble.narration)
+                    || ActivityModel.deriveLabel(e, activityPane.live)
+                    || "Working…");
+            }
+            readonly property string meta:
+                activityPane.entry ? ActivityModel.metaLabel(activityPane.entry) : ""
+
+            // The newest tool this phase touched gives the row its glyph;
+            // a phase of pure thinking keeps the idea bulb.
+            readonly property string glyph: {
+                var items = activityPane.entry ? activityPane.entry.items : [];
+                var name = "";
+                for (var i = 0; i < items.length; i++)
+                    if (items[i] && items[i].t === "c" && items[i].name)
+                        name = items[i].name;
+                return name ? NativeToolMeta.icon(name) : "emoji_objects";
+            }
+
+            spacing: 4
+
+            Rectangle {
+                id: activityRow
+                Layout.fillWidth: true
+                implicitHeight: 30
+                radius: 8
+                // A long model-written label must not escape the bubble.
+                clip: true
+                color: activityHover.hovered
+                    ? Theme.withAlpha(Theme.primary, 0.14) : "transparent"
+                Behavior on color { ColorAnimation { duration: 220 } }
+
+                // Same travelling highlight as the chips: the glyphs
+                // brighten left → right while this phase is live, and rest
+                // the moment it isn't.
+                readonly property real half: Math.max(40, width * 0.30)
+                property real sweep: 0
+                SequentialAnimation on sweep {
+                    running: activityPane.live
+                    loops: Animation.Infinite
+                    NumberAnimation {
+                        from: -activityRow.half
+                        to: activityRow.width + activityRow.half
+                        duration: 1500
+                        easing.type: Easing.InOutSine
+                    }
+                    PauseAnimation { duration: 450 }
+                }
+                function colorAt(px) {
+                    if (activityHover.hovered) return Theme.primary;
+                    if (!activityPane.live) return Theme.surfaceVariantText;
+                    var k = Math.max(0, 1 - Math.abs(px - activityRow.sweep)
+                                     / activityRow.half);
+                    k = k * k * 0.95;
+                    var base = Theme.surfaceVariantText;
+                    var acc = Theme.primary;
+                    return Qt.rgba(
+                        base.r + (acc.r - base.r) * k,
+                        base.g + (acc.g - base.g) * k,
+                        base.b + (acc.b - base.b) * k, 1);
+                }
+                function iconColor() {
+                    return activityRow.colorAt(activityGlyph.x + activityGlyph.width / 2);
+                }
+
+                HoverHandler { id: activityHover; cursorShape: Qt.PointingHandCursor }
+                TapHandler {
+                    onTapped: bubble.toggleActivity(activityPane.srcIdx)
+                }
+
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 8
+                    anchors.rightMargin: 8
+                    spacing: 6
+
+                    DIcon {
+                        id: activityGlyph
+                        width: 16; height: 16
+                        Layout.alignment: Qt.AlignVCenter
+                        name: activityPane.glyph
+                        size: 14
+                        color: activityRow.iconColor()
+                    }
+
+                    SweepLabel {
+                        id: activityLabel
+                        label: activityPane.label
+                        offsetX: activityLabel.x
+                        colorAt: activityRow.colorAt
+                        Layout.alignment: Qt.AlignVCenter
+                    }
+
+                    Text {
+                        text: activityPane.meta
+                        visible: text.length > 0
+                        color: activityHover.hovered
+                            ? Theme.primary : Theme.surfaceVariantText
+                        font.pixelSize: 11
+                        Layout.alignment: Qt.AlignVCenter
+                        Behavior on color { ColorAnimation { duration: 220 } }
+                    }
+
+                    Item { Layout.fillWidth: true }
+
+                    // Right edge: crossfades between the "expand" chevron
+                    // and the "collapse" chevron.
+                    Item {
+                        width: 16; height: 16
+                        Layout.alignment: Qt.AlignVCenter
+                        DIcon {
+                            anchors.centerIn: parent
+                            name: "chevron_right"
+                            size: 14
+                            color: activityRow.iconColor()
+                            opacity: activityPane.expanded ? 0 : 1
+                            Behavior on opacity { NumberAnimation { duration: 220 } }
+                        }
+                        DIcon {
+                            anchors.centerIn: parent
+                            name: "expand_more"
+                            size: 14
+                            color: activityRow.iconColor()
+                            opacity: activityPane.expanded ? 1 : 0
+                            Behavior on opacity { NumberAnimation { duration: 220 } }
                         }
                     }
                 }
             }
+
+            // Expanded detail: the phase's steps in production order —
+            // status lines, then thinking boxes, then tool chips.
+            Repeater {
+                model: activityPane.expanded && activityPane.entry
+                    ? activityPane.entry.items.length : 0
+
+                delegate: Loader {
+                    id: stepLoader
+                    required property int index
+                    // NOT `item`: Loader.item is the loaded object, and a
+                    // same-named property shadows it — `stepLoader.item.entry`
+                    // then writes onto the model item instead of the
+                    // component, leaving every pondering box and chip with a
+                    // null entry (empty thinking, unlabelled chips).
+                    readonly property var stepItem:
+                        (activityPane.entry
+                         && index < activityPane.entry.items.length)
+                            ? activityPane.entry.items[index] : null
+                    readonly property int chipIdx:
+                        stepItem && stepItem.t === "c" ? stepItem.i : -1
+                    readonly property var chipRow:
+                        (chipIdx >= 0 && chipIdx < bubble.toolLogArr.length)
+                            ? bubble.toolLogArr[chipIdx] : null
+                    Layout.fillWidth: true
+                    sourceComponent:
+                        !stepItem ? emptyStepComp
+                        : stepItem.t === "n" ? narrationStepComp
+                        : stepItem.t === "k" ? ponderBoxComp
+                        : stepItem.t === "c" ? toolChipComp
+                        : emptyStepComp
+                    onLoaded: {
+                        if (stepLoader.chipIdx >= 0) {
+                            stepLoader.item.index = Qt.binding(
+                                function () { return stepLoader.chipIdx; });
+                            stepLoader.item.entry = Qt.binding(
+                                function () { return stepLoader.chipRow; });
+                        } else {
+                            stepLoader.item.entry = Qt.binding(
+                                function () { return stepLoader.stepItem; });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // A step with no visual weight (a narration line that never filled,
+    // an entry type this build doesn't render).
+    Component {
+        id: emptyStepComp
+        Item {
+            width: 0; height: 0
+            property var entry: null
+        }
+    }
+
+    // One status line the model wrote, as a quiet row inside the expanded
+    // activity block.
+    Component {
+        id: narrationStepComp
+        Text {
+            property var entry: null
+            text: entry && bubble
+                ? bubble.narration.substring(entry.a, entry.b).trim() : ""
+            visible: text.length > 0
+            color: Theme.surfaceVariantText
+            font.pixelSize: 11
+            Layout.fillWidth: true
+            wrapMode: Text.WordWrap
         }
     }
 
