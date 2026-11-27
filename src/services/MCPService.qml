@@ -81,7 +81,13 @@ Item {
     }
 
     function reconnectToServer() {
-        disconnectFromServer();
+        _teardown(true);
+        // An explicit reconnect must not be swallowed by the auto-connect
+        // dedupe: that guard exists so a config push does not retry a URL
+        // that just failed. On a user action, clear it — otherwise the
+        // same URL+token after a failure makes "Connect" a dead button.
+        connectionError = "";
+        _attemptKey = "";
         Qt.callLater(connectToServer);
     }
 

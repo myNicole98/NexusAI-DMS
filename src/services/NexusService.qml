@@ -2389,6 +2389,30 @@ Item {
         svc.connectToServer();
     }
 
+    // Explicit user action from the settings button — the only path that
+    // may force a fresh attempt. `_connectMcpServer` deliberately no-ops
+    // while connected (the auto-connect sweep must not drop a live
+    // session), which is exactly why "Reconnect" did nothing: the button
+    // called it anyway. Reconnecting also clears the failed-attempt gate,
+    // so "Connect" after an error is a real retry instead of a no-op.
+    function _reconnectMcpServer(id) {
+        var inst = getMcpServer(id);
+        if (!inst) return;
+        if (inst.enabled === false) return;
+        var svc = _mcpServiceFor(id);
+        if (!svc) {
+            _setMcpConnectionError(id, "Service not ready — try again in a moment.");
+            return;
+        }
+        if (!inst.url) {
+            _setMcpConnectionError(id, "Set a URL to connect.");
+            return;
+        }
+        _setMcpConnectionError(id, "");
+        _mcpConnectingId = id;
+        svc.reconnectToServer();
+    }
+
     function _disconnectMcpServer(id) {
         var svc = _mcpServiceFor(id);
         if (svc && svc.isConnected) svc.disconnectFromServer();

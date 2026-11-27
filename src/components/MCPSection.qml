@@ -571,7 +571,11 @@ Item {
                                          && block.modelData && block.modelData.url
                                          && String(block.modelData.url).length > 0
                                 onClicked: if (root.service && block.sid.length > 0) {
-                                    root.service._connectMcpServer(block.sid);
+                                    // Always the forcing path: the button
+                                    // reads "Reconnect" on a live server and
+                                    // "Connect" after a failure, and both
+                                    // must actually retry.
+                                    root.service._reconnectMcpServer(block.sid);
                                 }
                             }
 
