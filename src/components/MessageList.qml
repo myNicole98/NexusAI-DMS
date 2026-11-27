@@ -100,11 +100,13 @@ ListView {
     onContentYChanged: if (atYEnd) pinned = true
 
     // Streaming status strip: reserves space at the end of the
-    // content while a stream is live.
+    // content while the floating pill is the live indicator. Suppressed
+    // alongside the pill — an activity row already ends the content.
     footer: Component {
         Item {
             width: list.width
-            height: list.service && list.service.isStreaming ? 34 : 0
+            height: (list.service && list.service.isStreaming
+                     && !list.service.streamHasActivity) ? 34 : 0
         }
     }
 
@@ -115,6 +117,7 @@ ListView {
         id: statusRow
         visible: list.service && list.service.isStreaming
                  && list.service.messageCount > 0
+                 && !list.service.streamHasActivity
         anchors.left: parent.left
         anchors.leftMargin: 6
         radius: 10
@@ -177,6 +180,7 @@ ListView {
             thinking: model.thinking
             toolLog: model.toolLog
             flow: model.flow
+            narration: model.narration
             attachments: model.attachments
             modelUsed: model.modelUsed
             modelProviderId: model.modelProviderId
