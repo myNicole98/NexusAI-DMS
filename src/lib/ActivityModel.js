@@ -12,6 +12,11 @@
 
 var THINKING_LABEL = "Thinking…";
 var BRIEF_LABEL = "Pondered briefly";
+// An MCP tool has no friendly name: `labelOf` hands the raw name back
+// (`NativeToolMeta.label` falls through). The collapsed line may never
+// show that — the spec keeps raw names in the expanded detail only.
+var TOOLS_LIVE_LABEL = "Using tools…";
+var TOOLS_DONE_LABEL = "Used tools";
 
 function _str(s) {
     return typeof s === "string" ? s : "";
@@ -125,7 +130,13 @@ function deriveLabel(block, live) {
             ms += it.ms || 0;
         }
     }
-    if (tool) return tool.label + (live ? "…" : "");
+    if (tool) {
+        // Friendly label only when the caller knows one; otherwise the
+        // generic wording (raw MCP names never reach the collapsed line).
+        if (!tool.label || tool.label === tool.name)
+            return live ? TOOLS_LIVE_LABEL : TOOLS_DONE_LABEL;
+        return tool.label + (live ? "…" : "");
+    }
     if (live || !pondered) return live ? THINKING_LABEL : "";
     return ms < 5000 ? BRIEF_LABEL
         : "Pondered for " + Math.round(ms / 1000) + " seconds";
