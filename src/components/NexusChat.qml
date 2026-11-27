@@ -77,9 +77,9 @@ Item {
             }
 
             // Status chips, bottom-left of the chat box just above the
-            // composer gap: MCP toolset count and the native web tools
-            // indicator. Both only show on an empty conversation (they
-            // fade away once the chat starts).
+            // composer gap: MCP toolset count, the native web tools
+            // indicator, and bash access. All three only show on an empty
+            // conversation (they fade away once the chat starts).
             Row {
                 id: statusChips
                 anchors.left: parent.left
@@ -178,6 +178,58 @@ Item {
                         Text {
                             anchors.verticalCenter: parent.verticalCenter
                             text: "Native Tools Enabled"
+                            color: Theme.surfaceVariantText
+                            font.pixelSize: 12
+                        }
+                    }
+                }
+
+                // Shell chip: bash access is its own master switch, so it
+                // gets its own pill — without one a live bash toolset reads
+                // as "nothing enabled". Error-tinted only when YOLO is armed
+                // AND bash is on: a remembered YOLO flag with bash off can
+                // run nothing, and must not dress the bar up as danger.
+                Rectangle {
+                    id: shellStatusChip
+                    readonly property bool on: chat.service
+                        ? chat.service.shellEnabled : false
+                    readonly property bool yolo: chat.service
+                        ? chat.service.shellEnabled
+                          && chat.service.shellYoloEnabled : false
+                    readonly property bool chatEmpty: chat.service
+                        ? chat.service.messageCount === 0 : true
+                    readonly property bool shown: on && chatEmpty
+                    width: shellStatusRow.implicitWidth + 20
+                    height: 28
+                    radius: 8
+                    opacity: shown ? 1 : 0
+                    visible: opacity > 0.01
+                    Behavior on opacity { NumberAnimation { duration: 220 } }
+                    color: Theme.withAlpha(Theme.surfaceContainerHigh, 0.75)
+                    border.width: 1
+                    border.color: Theme.withAlpha(
+                        shellStatusChip.yolo
+                            ? Theme.error : Theme.outlineVariant, 0.7)
+                    Behavior on border.color { ColorAnimation { duration: 220 } }
+
+                    Row {
+                        id: shellStatusRow
+                        anchors.centerIn: parent
+                        spacing: 6
+
+                        DIcon {
+                            anchors.verticalCenter: parent.verticalCenter
+                            name: "terminal"
+                            size: 14
+                            color: shellStatusChip.yolo
+                                ? Theme.error : Theme.primary
+                            Behavior on color { ColorAnimation { duration: 220 } }
+                        }
+
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: shellStatusChip.yolo
+                                ? "Bash Access — YOLO" : "Bash Access Enabled"
                             color: Theme.surfaceVariantText
                             font.pixelSize: 12
                         }
@@ -539,9 +591,11 @@ Item {
             }
 
             // Native shell tool switch: terminal icon. Its own master
-            // switch (shell access is not part of the web tools) and
-            // error-tinted whenever YOLO mode is on, so a glance at the
-            // bar shows the gate is down.
+            // switch (shell access is not part of the web tools), and
+            // error-tinted only while bash is LIVE *and* YOLO is armed —
+            // tinting off YOLO alone left the icon red after bash was
+            // switched off (the flags persist separately), which read as
+            // "bash can't be turned off from here".
             Rectangle {
                 id: shellChip
                 Layout.alignment: Qt.AlignVCenter
@@ -568,7 +622,7 @@ Item {
                     name: "terminal"
                     size: 18
                     filled: shellChip.on
-                    color: shellChip.yolo
+                    color: shellChip.on && shellChip.yolo
                            ? Theme.error
                            : (shellChip.on || shellHover.hovered
                               ? Theme.primary : Theme.surfaceVariantText)
@@ -681,7 +735,13 @@ Item {
     BubbleTip {
         id: shellTip
         parent: shellChip
-        tipText: shellChip.yolo ? "YOLO mode is on" : "Enable bash access"
+        // The tip states what the tap will do, so a red icon is never the
+        // only clue about whether bash is live.
+        tipText: shellChip.on
+            ? (shellChip.yolo
+                ? "Bash access on — YOLO runs every command without asking"
+                : "Bash access on — tap to turn it off")
+            : "Enable bash access"
     }
 
     // Settings view: fills the panel, on top of the chat, opened from
