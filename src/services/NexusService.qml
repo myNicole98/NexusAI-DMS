@@ -1088,6 +1088,10 @@ Item {
         var assistantId = _nextId();
         messagesModel.append(_msg("assistant", ""));
         messagesModel.setProperty(messagesModel.count - 1, "id", assistantId);
+        // Snapshot the chat before the request: the history drawer then
+        // carries it (with its prompt fallback title) for the whole turn,
+        // instead of the chat materializing only after the answer lands.
+        _saveActiveChat();
         _request(assistantId);
     }
 
@@ -1105,6 +1109,7 @@ Item {
         var assistantId = _nextId();
         messagesModel.append(_msg("assistant", ""));
         messagesModel.setProperty(messagesModel.count - 1, "id", assistantId);
+        _saveActiveChat();
         _request(assistantId);
     }
 
@@ -1515,7 +1520,10 @@ Item {
                          content: ChatHistory.titlePrompt(u, a) }],
             systemPrompt: "",
             temperature: 0.3,
-            maxTokens: 30,
+            // A reasoning model spends tokens on thinking before it emits
+            // the title; 30 was routinely swallowed whole (empty content →
+            // no title). Still small, but enough room for a 3-6 word line.
+            maxTokens: 96,
             timeoutSeconds: 30,
             stream: false
         });
@@ -1579,8 +1587,14 @@ Item {
         var rec = _findChat(id);
         if (!rec) return;                       // deleted meanwhile
         if (rec.title.length > 0) return;       // already titled
-        rec.title = (cleaned && cleaned.length > 0)
-            ? cleaned : _fallbackTitleFor(rec);
+        // A failed or empty generation must NOT bake the prompt fallback
+        // into the record: `chatDisplayTitle` already falls back at display
+        // time, and a baked title permanently blocks the retry (the guard
+        // above only fires while `title` is empty). A reasoning model that
+        // spends the title request's tokens on thinking would otherwise
+        // leave the chat fallback-titled forever.
+        if (!cleaned || cleaned.length === 0) return;
+        rec.title = cleaned;
         _touchChats();
         _persistChats();
     }
