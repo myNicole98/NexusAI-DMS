@@ -6,6 +6,8 @@
 
 var OPEN_TAG = "<think>";
 var CLOSE_TAG = "</think>";
+var NARRATE_OPEN = "<narrate>";
+var NARRATE_CLOSE = "</narrate>";
 
 // Split a raw stdout chunk into complete lines, carrying any partial
 // line across reads. CRLF tolerated; blank lines dropped.
@@ -294,23 +296,33 @@ function couldStartTag(tail, tag) {
     return tail.length < tag.length && tag.indexOf(tail) === 0;
 }
 
-// Route streamed text into content vs thinking, tracking <think> tags
-// that may be split across chunks. Newlines directly after a tag are
-// stripped. tagBuffer/insideThinkTag are carried between calls.
+// Route streamed text into content, thinking, or narration, tracking the
+// <think> and <narrate> tags that may be split across chunks. Newlines
+// directly after a tag are stripped. A <narrate> block is one status line:
+// it ends at its close tag OR at a newline, which is consumed. A stray
+// </narrate> is dropped, and narrate tags inside a thinking block are
+// stripped without nesting — that text stays thinking. tagBuffer/state are
+// carried between calls; state is "", "think" or "narrate".
 
-function routeThinkTags(text, tagBuffer, insideThinkTag) {
+function routeStreamTags(text, tagBuffer, state) {
     var res = {
         contentParts: [],
         thinkingParts: [],
+        narrateParts: [],
         tagBuffer: "",
-        insideThinkTag: !!insideThinkTag
+        state: state || ""
     };
     var input = (tagBuffer || "") + (text || "");
 
     function emit(s) {
         if (s.length === 0) return;
-        if (res.insideThinkTag) res.thinkingParts.push(s);
+        if (res.state === "think") res.thinkingParts.push(s);
+        else if (res.state === "narrate") res.narrateParts.push(s);
         else res.contentParts.push(s);
+    }
+
+    function afterTag(i) {
+        return input[i] === "\n" ? i + 1 : i;
     }
 
     var plain = "";
@@ -318,27 +330,49 @@ function routeThinkTags(text, tagBuffer, insideThinkTag) {
     while (i < input.length) {
         if (input[i] === "<") {
             var rest = input.substring(i);
-            if (!res.insideThinkTag && rest.indexOf(OPEN_TAG) === 0) {
+            if (rest.indexOf(NARRATE_OPEN) === 0) {
                 emit(plain); plain = "";
-                res.insideThinkTag = true;
-                i += OPEN_TAG.length;
-                if (input[i] === "\n") i++;
+                if (res.state !== "think") res.state = "narrate";
+                i = afterTag(i + NARRATE_OPEN.length);
                 continue;
             }
-            if (res.insideThinkTag && rest.indexOf(CLOSE_TAG) === 0) {
+            if (rest.indexOf(NARRATE_CLOSE) === 0) {
                 emit(plain); plain = "";
-                res.insideThinkTag = false;
-                i += CLOSE_TAG.length;
-                if (input[i] === "\n") i++;
+                if (res.state === "narrate") res.state = "";
+                i = afterTag(i + NARRATE_CLOSE.length);
                 continue;
             }
-            // Not a full tag — might be a tag split across chunks
-            var relevant = res.insideThinkTag ? CLOSE_TAG : OPEN_TAG;
-            if (couldStartTag(rest, relevant)) {
+            if (res.state !== "think" && rest.indexOf(OPEN_TAG) === 0) {
                 emit(plain); plain = "";
-                res.tagBuffer = rest;
-                return res;
+                res.state = "think";
+                i = afterTag(i + OPEN_TAG.length);
+                continue;
             }
+            if (res.state === "think" && rest.indexOf(CLOSE_TAG) === 0) {
+                emit(plain); plain = "";
+                res.state = "";
+                i = afterTag(i + CLOSE_TAG.length);
+                continue;
+            }
+            // Not a full tag — might be a tag split across chunks. Only the
+            // tags this state can still receive are worth holding back.
+            var candidates = res.state === "think" ? [CLOSE_TAG]
+                : res.state === "narrate" ? [NARRATE_CLOSE]
+                : [OPEN_TAG, NARRATE_OPEN, NARRATE_CLOSE];
+            for (var c = 0; c < candidates.length; c++) {
+                if (couldStartTag(rest, candidates[c])) {
+                    emit(plain); plain = "";
+                    res.tagBuffer = rest;
+                    return res;
+                }
+            }
+        }
+        // The newline is the narration line's terminator.
+        if (res.state === "narrate" && input[i] === "\n") {
+            emit(plain); plain = "";
+            res.state = "";
+            i++;
+            continue;
         }
         plain += input[i];
         i++;
